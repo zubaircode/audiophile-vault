@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Audiophile Vault — SD Card Music Curator &amp; Sync</title>
+    <script>
+      (function() {
+        try {
+          var t = localStorage.getItem('av_theme');
+          var isDark = t !== 'light';
+          if (isDark) {
+            document.documentElement.classList.add('dark');
+            document.documentElement.style.colorScheme = 'dark';
+          } else {
+            document.documentElement.classList.remove('dark');
+            document.documentElement.style.colorScheme = 'light';
+          }
+        } catch (e) {}
+      })();
+    </script>
+  </head>
+  <body class="bg-zinc-50 dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100 antialiased selection:bg-amber-500/30 selection:text-amber-700 dark:selection:text-amber-200 overflow-hidden">
+    <div id="root"></div>
+    <script type="module" src="/client/main.jsx"></script>
+  </body>
+</html>

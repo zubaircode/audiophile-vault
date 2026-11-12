@@ -1,0 +1,108 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: light;
+    border-color: #e4e4e7;
+  }
+
+  html.dark,
+  :root.dark {
+    color-scheme: dark;
+    border-color: #27272a;
+  }
+
+  body {
+    @apply font-sans antialiased;
+  }
+
+  *, ::before, ::after {
+    border-color: inherit;
+  }
+}
+
+/* Fallback ensuring root dark mode background is rock-solid */
+html.dark,
+html.dark body {
+  background-color: #09090b;
+  color: #f4f4f5;
+}
+
+@layer utilities {
+  .dark .dark\:bg-zinc-950,
+  :where(.dark, .dark *) .dark\:bg-zinc-950 {
+    background-color: #09090b;
+  }
+  .dark .dark\:bg-zinc-900,
+  :where(.dark, .dark *) .dark\:bg-zinc-900 {
+    background-color: #18181b;
+  }
+  .dark .dark\:border-zinc-800,
+  :where(.dark, .dark *) .dark\:border-zinc-800 {
+    border-color: #27272a;
+  }
+  .dark .dark\:border-zinc-800\/70,
+  :where(.dark, .dark *) .dark\:border-zinc-800\/70 {
+    border-color: rgba(39, 39, 42, 0.7);
+  }
+  .dark .dark\:hover\:bg-zinc-800\/70:hover,
+  :where(.dark, .dark *) .dark\:hover\:bg-zinc-800\/70:hover {
+    background-color: rgba(39, 39, 42, 0.7);
+  }
+  .dark .dark\:hover\:bg-zinc-900:hover,
+  :where(.dark, .dark *) .dark\:hover\:bg-zinc-900:hover {
+    background-color: #18181b;
+  }
+}
+
+/* Adaptive light / dark scrollbars matching retro-modern Cupertino desktop aesthetics */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(228, 228, 231, 0.6);
+}
+
+.dark ::-webkit-scrollbar-track,
+html.dark ::-webkit-scrollbar-track {
+  background: rgba(24, 24, 27, 0.6);
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(161, 161, 170, 0.6);
+  border-radius: 9999px;
+}
+
+.dark ::-webkit-scrollbar-thumb,
+html.dark ::-webkit-scrollbar-thumb {
+  background: rgba(63, 63, 70, 0.8);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(113, 113, 122, 0.8);
+}
+
+.dark ::-webkit-scrollbar-thumb:hover,
+html.dark ::-webkit-scrollbar-thumb:hover {
+  background: rgba(113, 113, 122, 0.9);
+}
+
+/* Double-buffered View Transitions for smooth full-screen GPU cross-fade */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: 180ms;
+  animation-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+  mix-blend-mode: normal;
+}
+
+/* Keep per-row transitions disabled during the snapshot swap */
+.theme-switching *,
+.theme-switching *::before,
+.theme-switching *::after {
+  transition: none !important;
+}
+
