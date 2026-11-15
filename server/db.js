@@ -71,9 +71,24 @@ const DEFAULT_CONFIG = {
   sourcePath: path.join(HOME_DIR, 'Music/Music/Media.localized/Music/'),
   vaultPath: path.join(HOME_DIR, 'Music/AudiophileVault/'),
   sdCardPath: process.env.AV_TARGET_SD_PATH || '',
-  playlistFormat: 'm3u',
-  emitCompanionM3u8: false,
+  exportPlaylistFolders: false,
 };
+
+export function getVolumeNameFromPath(targetPath) {
+  if (!targetPath || typeof targetPath !== 'string') return '';
+  const cleaned = targetPath.trim().replace(/\/+$/, '');
+  if (!cleaned) return '';
+  const base = path.basename(cleaned);
+  if (base.toLowerCase() === 'music') {
+    return path.basename(path.dirname(cleaned));
+  }
+  return base;
+}
+
+export function isSnowskyVolumePath(targetPath) {
+  const volName = getVolumeNameFromPath(targetPath);
+  return Boolean(volName && /snowsky/i.test(volName));
+}
 
 export function getTrackBaseNameFromFilename(audioFilename) {
   if (!audioFilename || typeof audioFilename !== 'string') return '';
@@ -338,16 +353,16 @@ class VaultRegistry {
     if (!parsed || typeof parsed !== 'object') return;
 
     if (parsed.config) {
+      const { playlistFormat: _pf, emitCompanionM3u8: _ecm, ...restConfig } = parsed.config;
       this.config = {
         ...DEFAULT_CONFIG,
-        ...parsed.config,
+        ...restConfig,
         sourcePath: expandTilde(parsed.config.sourcePath || DEFAULT_CONFIG.sourcePath),
         vaultPath: expandTilde(parsed.config.vaultPath || DEFAULT_CONFIG.vaultPath),
         sdCardPath: parsed.config.sdCardPath ?? DEFAULT_CONFIG.sdCardPath,
-        playlistFormat: parsed.config.playlistFormat || DEFAULT_CONFIG.playlistFormat,
-        emitCompanionM3u8: Boolean(
-          parsed.config.emitCompanionM3u8 ??
-          (parsed.config.playlistFormat === 'm3u8' || DEFAULT_CONFIG.emitCompanionM3u8)
+        exportPlaylistFolders: Boolean(
+          parsed.config.exportPlaylistFolders ??
+            isSnowskyVolumePath(parsed.config.sdCardPath ?? DEFAULT_CONFIG.sdCardPath)
         ),
       };
     }
@@ -539,10 +554,7 @@ class VaultRegistry {
       vaultPath: this.config.vaultPath,
       sdCardPath: this.config.sdCardPath,
       targetPath: this.config.sdCardPath,
-      playlistFormat: this.config.playlistFormat || 'm3u',
-      emitCompanionM3u8: Boolean(
-        this.config.emitCompanionM3u8 ?? (this.config.playlistFormat === 'm3u8')
-      ),
+      exportPlaylistFolders: Boolean(this.config.exportPlaylistFolders),
       registryPath: this.getVaultIndexPath(),
       stats: {
         totalTracks,
@@ -568,17 +580,18 @@ class VaultRegistry {
     const targetInput =
       partial.targetPath !== undefined ? partial.targetPath : partial.sdCardPath;
     if (typeof targetInput === 'string') {
-      this.config.sdCardPath = targetInput.trim();
-    }
-    if (typeof partial.playlistFormat === 'string') {
-      const fmt = partial.playlistFormat.toLowerCase().trim();
-      this.config.playlistFormat = fmt === 'm3u8' ? 'm3u8' : 'm3u';
-      if (fmt === 'm3u8') {
-        this.config.emitCompanionM3u8 = true;
+      const prevVol = getVolumeNameFromPath(this.config.sdCardPath);
+      const nextTarget = targetInput.trim();
+      const nextVol = getVolumeNameFromPath(nextTarget);
+      this.config.sdCardPath = nextTarget;
+
+      // Auto-detect SNOWSKY volume when target volume changes (unless explicitly overridden)
+      if (partial.exportPlaylistFolders === undefined && nextVol !== prevVol) {
+        this.config.exportPlaylistFolders = isSnowskyVolumePath(nextTarget);
       }
     }
-    if (partial.emitCompanionM3u8 !== undefined) {
-      this.config.emitCompanionM3u8 = Boolean(partial.emitCompanionM3u8);
+    if (partial.exportPlaylistFolders !== undefined) {
+      this.config.exportPlaylistFolders = Boolean(partial.exportPlaylistFolders);
     }
     this.persist();
     return this.getConfig();

@@ -4,15 +4,11 @@ import { db } from './db.js';
 import { sanitizeSegment } from './services/metadata.js';
 
 /**
- * Sanitizes a playlist display name into a clean filesystem-safe `.m3u` or `.m3u8` filename
- * according to the active configuration.
+ * Sanitizes a playlist display name into a clean filesystem-safe `.m3u` filename.
  */
-export function getPlaylistFilename(playlistName, customFormat) {
-  const cfgFormat = (db.getConfig?.()?.playlistFormat || 'm3u').toLowerCase();
-  const format = (customFormat || cfgFormat).replace(/^\./, '').toLowerCase();
-  const ext = format === 'm3u8' ? 'm3u8' : 'm3u';
+export function getPlaylistFilename(playlistName) {
   const safeStem = sanitizeSegment(playlistName, 'Playlist');
-  return `${safeStem}.${ext}`;
+  return `${safeStem}.m3u`;
 }
 
 export function getPlaylistM3u8Filename(playlistName) {
@@ -23,7 +19,7 @@ export function getPlaylistM3u8Filename(playlistName) {
  * Resolves the relative path between the playlist destination directory and the audio file.
  * - Forces forward slashes (`/`).
  * - Ensures the path never begins with a leading slash (`/`).
- * - Strips leading `./` so strict embedded RTOS parsers (Echo Nano) resolve directly.
+ * - Strips leading `./` so strict embedded RTOS parsers resolve directly.
  */
 export function resolveRelativeTrackPath(targetPlaylistDir, trackFilenameOrPath, audioDir) {
   const baseAudioDir = audioDir || db.getVaultDir();
@@ -49,9 +45,9 @@ export function resolveRelativeTrackPath(targetPlaylistDir, trackFilenameOrPath,
 }
 
 /**
- * Builds universal M3U/M3U8 file content:
- * - Line Endings: Strict Windows CRLF (\r\n) on every line to prevent RTOS parsers
- *   (Echo Nano) from appending \r to track names.
+ * Builds universal M3U file content:
+ * - Line Endings: Strict Windows CRLF (\r\n) on every line to prevent embedded RTOS parsers
+ *   from appending \r to track names.
  * - File Structure:
  *     #EXTM3U\r\n
  *     #EXTINF:-1,{Artist} - {Title}\r\n
@@ -90,11 +86,11 @@ export function buildM3u8Content(playlist, options = {}) {
 export const buildPlaylistContent = buildM3u8Content;
 
 /**
- * Removes the discontinued `PLAYLISTS/` directory if present.
- * If companion `.m3u8` is not enabled, sweeps obsolete `.m3u8` files so only clean `.m3u` files remain.
+ * Removes the discontinued `PLAYLISTS/` directory if present and sweeps any legacy `.m3u8` files
+ * so only clean `.m3u` files remain.
  * Never removes primary `.m3u` files.
  */
-export function cleanupStrayRootM3u8Files(activeFormat, targetDir) {
+export function cleanupStrayRootM3u8Files(_unused, targetDir) {
   try {
     const vaultDir = targetDir || db.getVaultDir();
     if (!fs.existsSync(vaultDir)) return;
@@ -105,21 +101,14 @@ export function cleanupStrayRootM3u8Files(activeFormat, targetDir) {
       fs.rmSync(legacyPlaylistsSubdir, { recursive: true, force: true });
     }
 
-    const config = db.getConfig?.() || {};
-    const emitCompanion = Boolean(
-      config.emitCompanionM3u8 || config.playlistFormat === 'm3u8'
-    );
-
-    // If companion .m3u8 is not enabled, clean up any .m3u8 files
-    if (!emitCompanion) {
-      const entries = fs.readdirSync(vaultDir, { withFileTypes: true });
-      for (const entry of entries) {
-        if (entry.isFile() && /\.m3u8$/i.test(entry.name)) {
-          try {
-            fs.unlinkSync(path.join(vaultDir, entry.name));
-          } catch {
-            // Ignore individual unlink error
-          }
+    // 2. Always sweep legacy .m3u8 files
+    const entries = fs.readdirSync(vaultDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isFile() && /\.m3u8$/i.test(entry.name)) {
+        try {
+          fs.unlinkSync(path.join(vaultDir, entry.name));
+        } catch {
+          // Ignore individual unlink error
         }
       }
     }
@@ -129,66 +118,52 @@ export function cleanupStrayRootM3u8Files(activeFormat, targetDir) {
 }
 
 /**
- * Writes the playlist file(s) to the destination directory:
- * - Primary: Always writes `.m3u` as the primary universal file (UTF-8 without BOM, CRLF, relative paths).
- * - Companion: If enabled in settings, also writes companion `.m3u8` file for strict Android/HiBy parsers.
+ * Writes the universal `.m3u` playlist file to the destination directory
+ * (UTF-8 without BOM, CRLF line endings, relative paths without leading slashes)
+ * and removes any legacy `.m3u8` file with the same stem.
  */
 export function writePlaylistM3u8(playlist, options = {}) {
   db.init();
-  const config = db.getConfig?.() || {};
   const targetPlaylistDir = options.targetPlaylistDir || db.getVaultDir();
   const audioDir = options.audioDir || db.getVaultDir();
 
   fs.mkdirSync(targetPlaylistDir, { recursive: true });
 
-  const emitCompanion = Boolean(
-    options.emitCompanionM3u8 ??
-    (config.emitCompanionM3u8 || config.playlistFormat === 'm3u8')
-  );
-
   const content = buildM3u8Content(playlist, { targetPlaylistDir, audioDir });
 
-  // 1. Primary .m3u file (Universal Standard for RTOS & all players)
-  const m3uFilename = getPlaylistFilename(playlist.name, 'm3u');
+  // Write primary .m3u file (Universal Standard for Music Players)
+  const m3uFilename = getPlaylistFilename(playlist.name);
   const m3uFullPath = path.join(targetPlaylistDir, m3uFilename);
   fs.writeFileSync(m3uFullPath, content, { encoding: 'utf8' });
 
-  // 2. Companion .m3u8 file (if enabled in settings)
-  const m3u8Filename = getPlaylistFilename(playlist.name, 'm3u8');
-  const m3u8FullPath = path.join(targetPlaylistDir, m3u8Filename);
-
-  if (emitCompanion) {
-    fs.writeFileSync(m3u8FullPath, content, { encoding: 'utf8' });
-    console.log(
-      `[PLAYLIST] Generated universal primary .m3u and companion .m3u8: "${playlist.name}"`
-    );
-  } else {
-    // If companion .m3u8 is disabled, ensure any stale companion file is removed
-    if (fs.existsSync(m3u8FullPath)) {
-      try {
-        fs.unlinkSync(m3u8FullPath);
-      } catch {
-        // Ignore unlink error
-      }
+  // Ensure any legacy .m3u8 file with the same stem is removed
+  const legacyM3u8Filename = `${sanitizeSegment(playlist.name, 'Playlist')}.m3u8`;
+  const legacyM3u8FullPath = path.join(targetPlaylistDir, legacyM3u8Filename);
+  if (fs.existsSync(legacyM3u8FullPath)) {
+    try {
+      fs.unlinkSync(legacyM3u8FullPath);
+    } catch {
+      // Ignore unlink error
     }
-    console.log(`[PLAYLIST] Generated universal primary .m3u playlist: "${m3uFilename}"`);
   }
 
+  console.log(`[PLAYLIST] Generated universal .m3u playlist: "${m3uFilename}"`);
   return m3uFullPath;
 }
 
 export const writePlaylist = writePlaylistM3u8;
 
 /**
- * Removes a playlist file (.m3u and companion .m3u8) from the destination directory if it exists.
+ * Removes a playlist file (.m3u and any legacy .m3u8) from the destination directory if it exists.
  */
 export function deletePlaylistM3u8(playlistName, options = {}) {
   try {
     const targetPlaylistDir = options.targetPlaylistDir || db.getVaultDir();
-    const m3uFilename = getPlaylistFilename(playlistName, 'm3u');
-    const m3u8Filename = getPlaylistFilename(playlistName, 'm3u8');
+    const safeStem = sanitizeSegment(playlistName, 'Playlist');
+    const m3uFilename = `${safeStem}.m3u`;
+    const legacyM3u8Filename = `${safeStem}.m3u8`;
 
-    for (const name of [m3uFilename, m3u8Filename]) {
+    for (const name of [m3uFilename, legacyM3u8Filename]) {
       const fullPath = path.join(targetPlaylistDir, name);
       if (fs.existsSync(fullPath)) {
         fs.unlinkSync(fullPath);
@@ -200,41 +175,29 @@ export function deletePlaylistM3u8(playlistName, options = {}) {
 }
 
 /**
- * Regenerates all playlist files in the vault from `.vault_index.json`,
- * removes the legacy `PLAYLISTS/` directory, and prunes orphaned playlist files.
+ * Regenerates all `.m3u` playlist files in the vault from `.vault_index.json`,
+ * removes the legacy `PLAYLISTS/` directory, sweeps any `.m3u8` files, and prunes orphaned `.m3u` files.
  */
 export function syncAllPlaylistsM3u8(options = {}) {
   db.init();
-  const config = db.getConfig?.() || {};
   const targetPlaylistDir = options.targetPlaylistDir || db.getVaultDir();
   const audioDir = options.audioDir || db.getVaultDir();
 
   cleanupStrayRootM3u8Files(undefined, targetPlaylistDir);
   fs.mkdirSync(targetPlaylistDir, { recursive: true });
 
-  const emitCompanion = Boolean(
-    options.emitCompanionM3u8 ??
-    (config.emitCompanionM3u8 || config.playlistFormat === 'm3u8')
-  );
-
   const validFilenames = new Set();
   for (const playlist of Object.values(db.playlists)) {
-    const m3uFilename = getPlaylistFilename(playlist.name, 'm3u');
+    const m3uFilename = getPlaylistFilename(playlist.name);
     validFilenames.add(m3uFilename.toLowerCase());
-
-    if (emitCompanion) {
-      const m3u8Filename = getPlaylistFilename(playlist.name, 'm3u8');
-      validFilenames.add(m3u8Filename.toLowerCase());
-    }
 
     writePlaylistM3u8(playlist, {
       targetPlaylistDir,
       audioDir,
-      emitCompanionM3u8: emitCompanion,
     });
   }
 
-  // Prune any orphaned .m3u or .m3u8 files in the target playlist directory
+  // Prune any orphaned .m3u or legacy .m3u8 files in the target playlist directory
   try {
     const entries = fs.readdirSync(targetPlaylistDir, { withFileTypes: true });
     for (const entry of entries) {
@@ -245,9 +208,7 @@ export function syncAllPlaylistsM3u8(options = {}) {
           fs.unlinkSync(path.join(targetPlaylistDir, entry.name));
         }
       } else if (lower.endsWith('.m3u8')) {
-        if (!emitCompanion || !validFilenames.has(lower)) {
-          fs.unlinkSync(path.join(targetPlaylistDir, entry.name));
-        }
+        fs.unlinkSync(path.join(targetPlaylistDir, entry.name));
       }
     }
   } catch {

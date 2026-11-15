@@ -11,6 +11,7 @@ import TrackTable from './components/TrackTable.jsx';
 import LogViewer from './components/LogViewer.jsx';
 import ArtworkModal, { findAlbumSiblingTracks } from './components/ArtworkModal.jsx';
 import { PlayerProvider, useAudioPlayer } from './context/PlayerContext.jsx';
+import { API_BASE } from './utils/api.js';
 import {
   annotateCompilationCohorts,
   matchesTrackSearch,
@@ -41,6 +42,7 @@ function AppContent() {
     sourcePath: '~/Music/Music/Media.localized/Music/',
     vaultPath: '~/Music/AudiophileVault/',
     sdCardPath: '',
+    exportPlaylistFolders: false,
     stats: {
       totalTracks: 0,
       totalBytes: 0,
@@ -52,13 +54,77 @@ function AppContent() {
   const [volumes, setVolumes] = useState([]);
   const [selectedVolumePath, setSelectedVolumePath] = useState('');
   const [tracks, setTracks] = useState([]);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [filterMissingArt, setFilterMissingArt] = useState(false);
+  const [searchQuery, setSearchQuery] = useState(() => {
+    try {
+      return localStorage.getItem('av_search_filter') || '';
+    } catch {
+      return '';
+    }
+  });
+  const [filterMissingArt, setFilterMissingArt] = useState(() => {
+    try {
+      return localStorage.getItem('av_filter_missing_art') === 'true';
+    } catch {
+      return false;
+    }
+  });
 
   // Playlist state
   const [playlists, setPlaylists] = useState([]);
   const [mostRecentPlaylistId, setMostRecentPlaylistId] = useState(null);
-  const [activePlaylistId, setActivePlaylistId] = useState(null); // null = Master Library
+  const [activePlaylistId, setActivePlaylistId] = useState(() => {
+    try {
+      return localStorage.getItem('av_active_playlist_id') || null;
+    } catch {
+      return null;
+    }
+  }); // null = Master Library
+
+  // Selected track state for persistent table selection
+  const [selectedTrackKey, setSelectedTrackKey] = useState(() => {
+    try {
+      return localStorage.getItem('av_selected_track_key') || null;
+    } catch {
+      return null;
+    }
+  });
+
+  // Synchronize UI filter and selection states to localStorage
+  useEffect(() => {
+    try {
+      if (searchQuery) {
+        localStorage.setItem('av_search_filter', searchQuery);
+      } else {
+        localStorage.removeItem('av_search_filter');
+      }
+    } catch {}
+  }, [searchQuery]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('av_filter_missing_art', String(filterMissingArt));
+    } catch {}
+  }, [filterMissingArt]);
+
+  useEffect(() => {
+    try {
+      if (activePlaylistId) {
+        localStorage.setItem('av_active_playlist_id', activePlaylistId);
+      } else {
+        localStorage.removeItem('av_active_playlist_id');
+      }
+    } catch {}
+  }, [activePlaylistId]);
+
+  useEffect(() => {
+    try {
+      if (selectedTrackKey) {
+        localStorage.setItem('av_selected_track_key', selectedTrackKey);
+      } else {
+        localStorage.removeItem('av_selected_track_key');
+      }
+    } catch {}
+  }, [selectedTrackKey]);
 
   // Manual Artwork Inspection & Override Modal state
   const [inspectingTrackKey, setInspectingTrackKey] = useState(null);
@@ -118,7 +184,7 @@ function AppContent() {
 
   const fetchConfig = useCallback(async () => {
     try {
-      const res = await fetch('/api/config');
+      const res = await fetch(`${API_BASE}/api/config`);
       if (!res.ok) return;
       const data = await res.json();
       setConfig(data);
@@ -139,7 +205,7 @@ function AppContent() {
 
   const fetchVolumes = useCallback(async () => {
     try {
-      const res = await fetch('/api/volumes');
+      const res = await fetch(`${API_BASE}/api/volumes`);
       if (!res.ok) return;
       const data = await res.json();
       const list = data.volumes || [];
@@ -162,10 +228,26 @@ function AppContent() {
       });
 
       if (list.length > 0) {
-        setSelectedVolumePath((prev) => {
-          const stillMounted = list.some((v) => v.path === prev);
-          return stillMounted ? prev : list[0].path;
-        });
+        const currentSelected = selectedVolumePathRef.current;
+        const stillMounted = list.some(
+          (v) => v.path === currentSelected || currentSelected.startsWith(`${v.path}/`)
+        );
+        const nextPath = stillMounted ? currentSelected : list[0].path;
+        if (nextPath !== currentSelected) {
+          setSelectedVolumePath(nextPath);
+          fetch(`${API_BASE}/api/config`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sdCardPath: nextPath }),
+          })
+            .then((r) => (r.ok ? r.json() : null))
+            .then((updated) => {
+              if (updated) {
+                setConfig((prev) => ({ ...prev, ...updated }));
+              }
+            })
+            .catch(() => {});
+        }
       } else {
         setSelectedVolumePath((prev) => (prev === '' ? prev : ''));
       }
@@ -176,7 +258,7 @@ function AppContent() {
 
   const fetchTracks = useCallback(async () => {
     try {
-      const res = await fetch('/api/tracks');
+      const res = await fetch(`${API_BASE}/api/tracks`);
       if (!res.ok) return;
       const data = await res.json();
       setTracks(data.tracks || []);
@@ -187,11 +269,25 @@ function AppContent() {
 
   const fetchPlaylists = useCallback(async () => {
     try {
-      const res = await fetch('/api/playlists');
+      const res = await fetch(`${API_BASE}/api/playlists`);
       if (!res.ok) return;
       const data = await res.json();
-      setPlaylists(data.playlists || []);
+      const list = data.playlists || [];
+      setPlaylists(list);
       setMostRecentPlaylistId(data.mostRecentPlaylistId || null);
+
+      // Validate restored activePlaylistId against fetched playlists
+      setActivePlaylistId((currentId) => {
+        if (!currentId) return null;
+        const exists = list.some((p) => p.id === currentId);
+        if (!exists) {
+          try {
+            localStorage.removeItem('av_active_playlist_id');
+          } catch {}
+          return null;
+        }
+        return currentId;
+      });
     } catch (err) {
       console.error('Failed to load playlists:', err);
     }
@@ -199,8 +295,10 @@ function AppContent() {
 
   // Initial load + periodic volume polling (every 8s)
   useEffect(() => {
-    fetchConfig();
-    fetchVolumes();
+    (async () => {
+      await fetchConfig();
+      await fetchVolumes();
+    })();
     fetchTracks();
     fetchPlaylists();
 
@@ -222,8 +320,8 @@ function AppContent() {
       }
 
       const url = replay
-        ? '/api/import/progress?replay=1'
-        : '/api/import/progress';
+        ? `${API_BASE}/api/import/progress?replay=1`
+        : `${API_BASE}/api/import/progress`;
       const importEvents = new EventSource(url);
       importEventsRef.current = importEvents;
 
@@ -261,7 +359,7 @@ function AppContent() {
   useEffect(() => {
     const importEvents = connectIngestStream({ replay: true });
 
-    const artworkEvents = new EventSource('/api/artwork/progress');
+    const artworkEvents = new EventSource(`${API_BASE}/api/artwork/progress`);
     artworkEventsRef.current = artworkEvents;
     artworkEvents.onmessage = (event) => {
       try {
@@ -322,7 +420,7 @@ function AppContent() {
       }
     };
 
-    const syncEvents = new EventSource('/api/sync/progress');
+    const syncEvents = new EventSource(`${API_BASE}/api/sync/progress`);
     syncEventsRef.current = syncEvents;
     syncEvents.onmessage = (event) => {
       try {
@@ -393,7 +491,7 @@ function AppContent() {
   const handleCreatePlaylist = useCallback(
     async (customName) => {
       try {
-        const res = await fetch('/api/playlists', {
+        const res = await fetch(`${API_BASE}/api/playlists`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(customName ? { name: customName } : {}),
@@ -420,7 +518,7 @@ function AppContent() {
   const handleRenamePlaylist = useCallback(
     async (playlistId, newName) => {
       try {
-        const res = await fetch(`/api/playlists/${encodeURIComponent(playlistId)}`, {
+        const res = await fetch(`${API_BASE}/api/playlists/${encodeURIComponent(playlistId)}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ name: newName }),
@@ -446,7 +544,7 @@ function AppContent() {
     async (playlistId) => {
       try {
         const res = await fetch(
-          `/api/playlists/${encodeURIComponent(playlistId)}/duplicate`,
+          `${API_BASE}/api/playlists/${encodeURIComponent(playlistId)}/duplicate`,
           { method: 'POST' }
         );
         const data = await res.json();
@@ -469,7 +567,7 @@ function AppContent() {
   const handleDeletePlaylist = useCallback(
     async (playlistId, playlistName) => {
       try {
-        const res = await fetch(`/api/playlists/${encodeURIComponent(playlistId)}`, {
+        const res = await fetch(`${API_BASE}/api/playlists/${encodeURIComponent(playlistId)}`, {
           method: 'DELETE',
         });
         const data = await res.json();
@@ -496,7 +594,7 @@ function AppContent() {
     async (playlistId, trackKey, trackObj) => {
       try {
         const res = await fetch(
-          `/api/playlists/${encodeURIComponent(playlistId)}/tracks`,
+          `${API_BASE}/api/playlists/${encodeURIComponent(playlistId)}/tracks`,
           {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -534,7 +632,7 @@ function AppContent() {
     async (playlistId, trackKey, trackObj) => {
       try {
         const res = await fetch(
-          `/api/playlists/${encodeURIComponent(playlistId)}/tracks/${encodeURIComponent(
+          `${API_BASE}/api/playlists/${encodeURIComponent(playlistId)}/tracks/${encodeURIComponent(
             trackKey
           )}`,
           { method: 'DELETE' }
@@ -581,7 +679,7 @@ function AppContent() {
 
       try {
         const res = await fetch(
-          `/api/playlists/${encodeURIComponent(playlistId)}/reorder`,
+          `${API_BASE}/api/playlists/${encodeURIComponent(playlistId)}/reorder`,
           {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
@@ -637,7 +735,7 @@ function AppContent() {
 
       try {
         const res = await fetch(
-          `/api/playlists/${encodeURIComponent(playlistId)}/move`,
+          `${API_BASE}/api/playlists/${encodeURIComponent(playlistId)}/move`,
           {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
@@ -676,7 +774,7 @@ function AppContent() {
     setIsConsoleOpen(true);
     setIsFetchingArtwork(true);
     try {
-      const res = await fetch('/api/artwork/backfill', {
+      const res = await fetch(`${API_BASE}/api/artwork/backfill`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -701,9 +799,38 @@ function AppContent() {
     }
   };
 
+  const handleFetchModalArtwork = async ({ track, applyToAlbum }) => {
+    if (!track) return;
+    const targetTracks = applyToAlbum ? findAlbumSiblingTracks(tracks, track) : [track];
+    const targetKeys = targetTracks
+      .map((t) => t.trackKey || t.normalizedKey || t.filename)
+      .filter(Boolean);
+    if (targetKeys.length === 0) return;
+
+    setIsFetchingArtwork(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/artwork/backfill`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ trackKeys: targetKeys }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        setIsFetchingArtwork(false);
+        const msg = err.error || 'Could not start artwork download';
+        appendLog({ type: 'ERROR', message: `[ERROR] ${msg}` });
+        showToast(msg, 'error');
+        throw new Error(msg);
+      }
+    } catch (err) {
+      setIsFetchingArtwork(false);
+      throw err;
+    }
+  };
+
   const handleStopArtworkFetch = async () => {
     try {
-      const res = await fetch('/api/artwork/stop', {
+      const res = await fetch(`${API_BASE}/api/artwork/stop`, {
         method: 'POST',
       });
       const data = await res.json();
@@ -741,7 +868,7 @@ function AppContent() {
       if (track?.artist) formData.append('artist', track.artist);
       if (track?.album) formData.append('album', track.album);
 
-      const res = await fetch(`/api/artwork/${encodeURIComponent(baseName)}`, {
+      const res = await fetch(`${API_BASE}/api/artwork/${encodeURIComponent(baseName)}`, {
         method: 'POST',
         body: formData,
       });
@@ -810,7 +937,7 @@ function AppContent() {
       if (track?.artist) params.set('artist', track.artist);
       if (track?.album) params.set('album', track.album);
 
-      const url = `/api/artwork/${encodeURIComponent(baseName)}?${params.toString()}`;
+      const url = `${API_BASE}/api/artwork/${encodeURIComponent(baseName)}?${params.toString()}`;
       let res = await fetch(url, {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
@@ -827,7 +954,7 @@ function AppContent() {
       // Fallback to POST /api/artwork/:baseName/delete if DELETE was intercepted or returned 404/405
       if (res.status === 404 || res.status === 405) {
         res = await fetch(
-          `/api/artwork/${encodeURIComponent(baseName)}/delete`,
+          `${API_BASE}/api/artwork/${encodeURIComponent(baseName)}/delete`,
           {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -912,13 +1039,20 @@ function AppContent() {
 
   const handleBrowseFolder = async (targetField) => {
     try {
+      if (window.electronAPI?.selectDirectory) {
+        const selected = await window.electronAPI.selectDirectory();
+        if (selected) {
+          return cleanPathInput(selected);
+        }
+        return null;
+      }
       const prompt =
         targetField === 'source'
           ? 'Select Master Music Source Folder'
           : targetField === 'target'
           ? 'Select Target SD Card Folder'
           : 'Select Flat Vault Staging Folder';
-      const res = await fetch('/api/pick-folder', {
+      const res = await fetch(`${API_BASE}/api/pick-folder`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ prompt }),
@@ -941,10 +1075,8 @@ function AppContent() {
         sourcePath: cleanPathInput(newConfig.sourcePath),
         vaultPath: cleanPathInput(newConfig.vaultPath),
         sdCardPath: cleanPathInput(newConfig.sdCardPath || newConfig.targetPath),
-        playlistFormat: newConfig.playlistFormat || 'm3u',
-        emitCompanionM3u8: Boolean(newConfig.emitCompanionM3u8),
       };
-      const res = await fetch('/api/config', {
+      const res = await fetch(`${API_BASE}/api/config`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(cleanedPayload),
@@ -957,7 +1089,7 @@ function AppContent() {
         }
         appendLog({
           type: 'DONE',
-          message: `[CONFIG] Saved settings — Source: ${updated.sourcePath} | Vault: ${updated.vaultPath} | Format: .${updated.playlistFormat || 'm3u'}`,
+          message: `[CONFIG] Saved settings — Source: ${updated.sourcePath} | Vault: ${updated.vaultPath}`,
         });
         setIsSettingsOpen(false);
         showToast('Settings saved successfully');
@@ -973,6 +1105,29 @@ function AppContent() {
     }
   };
 
+  const handleToggleExportPlaylistFolders = useCallback(async () => {
+    const nextVal = !config.exportPlaylistFolders;
+    setConfig((prev) => ({ ...prev, exportPlaylistFolders: nextVal }));
+    try {
+      const res = await fetch(`${API_BASE}/api/config`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ exportPlaylistFolders: nextVal }),
+      });
+      if (!res.ok) throw new Error('Failed to update config');
+      const updated = await res.json();
+      setConfig((prev) => ({ ...prev, ...updated }));
+      showToast(
+        nextVal
+          ? 'SNOWSKY Mode enabled: Playlists will export as root folders on SD'
+          : 'SNOWSKY Mode disabled'
+      );
+    } catch (err) {
+      setConfig((prev) => ({ ...prev, exportPlaylistFolders: !nextVal }));
+      showToast('Failed to toggle SNOWSKY Mode', 'error');
+    }
+  }, [config.exportPlaylistFolders, showToast]);
+
   const handleStartIngest = async () => {
     setIsConsoleOpen(true);
     setIsIngesting(true);
@@ -981,7 +1136,7 @@ function AppContent() {
     connectIngestStream({ replay: false });
 
     try {
-      const res = await fetch('/api/import', {
+      const res = await fetch(`${API_BASE}/api/import`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
       });
@@ -1007,7 +1162,7 @@ function AppContent() {
     setIsConsoleOpen(true);
     setIsSyncing(true);
     try {
-      const res = await fetch('/api/sync', {
+      const res = await fetch(`${API_BASE}/api/sync`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ volumePath: selectedVolumePath }),
@@ -1034,7 +1189,7 @@ function AppContent() {
     setIsEjecting(true);
     setIsConsoleOpen(true);
     try {
-      const res = await fetch('/api/eject', {
+      const res = await fetch(`${API_BASE}/api/eject`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ volumePath: selectedVolumePath }),
@@ -1141,15 +1296,25 @@ function AppContent() {
     return Math.max(1, siblings.length);
   }, [tracks, inspectingTrack]);
 
-  const activeVolume = volumes.find((v) => v.path === selectedVolumePath) || null;
+  const activeVolume =
+    volumes.find(
+      (v) => v.path === selectedVolumePath || selectedVolumePath.startsWith(`${v.path}/`)
+    ) || null;
 
   const handleSelectVolume = useCallback((val) => {
     setSelectedVolumePath(val);
-    fetch('/api/config', {
+    fetch(`${API_BASE}/api/config`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ sdCardPath: val }),
-    }).catch(() => {});
+    })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((updated) => {
+        if (updated) {
+          setConfig((prev) => ({ ...prev, ...updated }));
+        }
+      })
+      .catch(() => {});
   }, []);
 
   const handleSelectLibrary = useCallback(() => {
@@ -1222,9 +1387,12 @@ function AppContent() {
     setFilterMissingArt(false);
   }, []);
 
+  const isElectron =
+    typeof window !== 'undefined' && Boolean(window.electronAPI?.isElectron);
+
   return (
-    <div className="h-screen w-screen flex flex-col bg-zinc-50 dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100 overflow-hidden transition-colors">
-      {/* 1. HEADER & UNIFIED STATS BAR */}
+    <div className="h-screen w-screen flex flex-col bg-zinc-50 dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100 overflow-hidden transition-colors select-none">
+      {/* 1. HEADER & UNIFIED STATS BAR (Integrated Window Drag & Traffic Lights) */}
       <Header
         vaultPath={config.vaultPath}
         totalTracks={tracks.length}
@@ -1239,6 +1407,8 @@ function AppContent() {
         onStartArtworkFetch={handleStartArtworkFetch}
         onStopArtworkFetch={handleStopArtworkFetch}
         onOpenSettings={handleOpenSettings}
+        exportPlaylistFolders={Boolean(config.exportPlaylistFolders)}
+        onToggleExportPlaylistFolders={handleToggleExportPlaylistFolders}
       />
 
       {/* 2. UNIFIED PLAYBACK & ACTION TOOLBAR */}
@@ -1286,6 +1456,8 @@ function AppContent() {
             onMovePlaylistTrack={handleMovePlaylistTrack}
             onInspectArtwork={handleInspectArtwork}
             scrollToTrackKey={scrollToTrackKey}
+            selectedTrackKey={selectedTrackKey}
+            onSelectTrack={setSelectedTrackKey}
           />
         </div>
 
@@ -1324,6 +1496,8 @@ function AppContent() {
           onClose={() => setInspectingTrackKey(null)}
           onUploadArtwork={handleUploadManualArtwork}
           onRemoveArtwork={handleRemoveManualArtwork}
+          onFetchArtwork={handleFetchModalArtwork}
+          isFetchingArtwork={isFetchingArtwork}
         />
       )}
 

@@ -18,6 +18,7 @@ export default defineConfig({
     },
   },
   server: {
+    host: '127.0.0.1',
     port: 5173,
     strictPort: true,
     proxy: {
@@ -30,5 +31,9 @@ export default defineConfig({
         changeOrigin: true,
       },
     },
+  },
+  build: {
+    outDir: 'client/dist',
+    emptyOutDir: true,
   },
 });

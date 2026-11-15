@@ -1,4 +1,5 @@
 import React, { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { API_BASE } from '../utils/api.js';
 import {
   useReactTable,
   getCoreRowModel,
@@ -114,7 +115,7 @@ const TrackCoverThumb = memo(
     // Use a stable URL key based strictly on persistent metadata,
     // only appending cache-busting timestamp (?v=...) if modified in current session.
     const artworkSrc = baseName
-      ? `/api/artwork/${encodeURIComponent(baseName)}${
+      ? `${API_BASE}/api/artwork/${encodeURIComponent(baseName)}${
           track.artworkUpdatedAt ? `?v=${track.artworkUpdatedAt}` : ''
         }`
       : null;
@@ -184,12 +185,14 @@ const TrackRow = memo(function TrackRow({
   isContextSelected,
   isCurrentActive,
   isFlashActive,
+  isSelected,
   isReorderEnabled,
   dropIndicatorClass,
   onDragStart,
   onDragOver,
   onDragEnd,
   onDrop,
+  onClick,
   onDoubleClick,
   onContextMenu,
 }) {
@@ -205,6 +208,7 @@ const TrackRow = memo(function TrackRow({
       onDragOver={(e) => onDragOver(e, idx)}
       onDragEnd={onDragEnd}
       onDrop={(e) => onDrop(e, idx)}
+      onClick={(e) => onClick?.(track, idx, e)}
       onDoubleClick={() => onDoubleClick(row.original, idx)}
       onContextMenu={(e) => onContextMenu(e, row.original, idx)}
       className={`group ${
@@ -214,6 +218,8 @@ const TrackRow = memo(function TrackRow({
           ? 'bg-amber-500/25 ring-2 ring-inset ring-amber-400 animate-pulse border-l-4 border-amber-400 shadow-md shadow-amber-500/20'
           : isContextSelected
           ? 'bg-amber-500/15 dark:bg-amber-500/20 ring-1 ring-inset ring-amber-500/40'
+          : isSelected
+          ? 'bg-amber-500/15 dark:bg-amber-500/20 ring-1 ring-inset ring-amber-500/40 border-l-2 border-amber-500'
           : isCurrentActive
           ? 'bg-amber-500/10 dark:bg-amber-500/15 border-l-2 border-amber-500 shadow-sm shadow-amber-500/10'
           : idx % 2 === 0
@@ -247,6 +253,23 @@ const TrackRow = memo(function TrackRow({
 const ROW_HEIGHT = 53;
 const OVERSCAN_ROWS = 15;
 
+const STORAGE_KEY_SCROLL = 'av_scroll_positions';
+
+function loadSavedScrollPositions() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY_SCROLL);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object') {
+        return parsed;
+      }
+    }
+  } catch (err) {
+    console.warn('Failed to load saved scroll positions:', err);
+  }
+  return {};
+}
+
 const TrackTable = memo(function TrackTable({
   tracks,
   searchQuery,
@@ -263,6 +286,8 @@ const TrackTable = memo(function TrackTable({
   onMovePlaylistTrack,
   onInspectArtwork,
   scrollToTrackKey = null,
+  selectedTrackKey = null,
+  onSelectTrack,
 }) {
   const { currentTrack, isPlaying, playTrack, togglePlayPause } = useAudioPlayer();
   const [sorting, setSorting] = useState(() =>
@@ -455,26 +480,68 @@ const TrackTable = memo(function TrackTable({
     [tracks, saveColWidths]
   );
 
-  // Scroll position cache across view contexts (keyed by playlist, missing art filter, and search)
-  const scrollCacheRef = useRef(new Map());
+  // Scroll position cache across view contexts persisted in localStorage under 'av_scroll_positions'
+  const scrollCacheRef = useRef(loadSavedScrollPositions());
+  const saveScrollTimeoutRef = useRef(null);
   const isRestoringScrollRef = useRef(false);
 
   // Compute a unique key representing the current browsing view context
   const currentViewKey = useMemo(() => {
-    const scope = activePlaylist ? `playlist_${activePlaylist.id}` : 'master_library';
+    const base = activePlaylist ? `playlist_${activePlaylist.id}` : 'library';
+    if (!filterMissingArt && (!searchQuery || !searchQuery.trim())) {
+      return base;
+    }
     const art = filterMissingArt ? 'missing_art' : 'all_art';
-    const query = searchQuery?.trim() ? `search_${encodeURIComponent(searchQuery.trim().toLowerCase())}` : 'no_search';
-    return `${scope}::${art}::${query}`;
+    const query = searchQuery?.trim()
+      ? `search_${encodeURIComponent(searchQuery.trim().toLowerCase())}`
+      : 'no_search';
+    return `${base}::${art}::${query}`;
   }, [activePlaylist?.id, filterMissingArt, searchQuery]);
 
-  // Restore scroll position whenever view context changes
+  const persistScrollPositions = useCallback(() => {
+    try {
+      localStorage.setItem(STORAGE_KEY_SCROLL, JSON.stringify(scrollCacheRef.current));
+    } catch (e) {
+      // ignore
+    }
+  }, []);
+
+  const debouncedSaveScroll = useCallback(() => {
+    if (saveScrollTimeoutRef.current) {
+      clearTimeout(saveScrollTimeoutRef.current);
+    }
+    saveScrollTimeoutRef.current = setTimeout(() => {
+      persistScrollPositions();
+    }, 200);
+  }, [persistScrollPositions]);
+
+  // Flush scroll positions on beforeunload and component unmount
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      persistScrollPositions();
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      if (saveScrollTimeoutRef.current) {
+        clearTimeout(saveScrollTimeoutRef.current);
+      }
+      persistScrollPositions();
+    };
+  }, [persistScrollPositions]);
+
+  // Restore scroll position whenever view context changes or data loads
   useLayoutEffect(() => {
+    // CRITICAL ASYNC TIMING GATE: Do NOT restore or clamp scroll when tracks array is empty
+    // (initial render before server data arrives). Restoring scroll against empty tracks would clamp to 0!
+    if (!tracks || tracks.length === 0) return;
+
     const container = scrollContainerRef.current;
     if (!container) return;
 
     isRestoringScrollRef.current = true;
 
-    const savedTop = scrollCacheRef.current.get(currentViewKey) ?? 0;
+    const savedTop = scrollCacheRef.current[currentViewKey] ?? 0;
     const maxScroll = Math.max(0, container.scrollHeight - container.clientHeight);
     const clamped = Math.min(savedTop, maxScroll);
 
@@ -507,10 +574,11 @@ const TrackTable = memo(function TrackTable({
       const top = e.currentTarget.scrollTop;
       setScrollTop(top);
       if (!isRestoringScrollRef.current) {
-        scrollCacheRef.current.set(currentViewKey, top);
+        scrollCacheRef.current[currentViewKey] = top;
+        debouncedSaveScroll();
       }
     },
-    [currentViewKey]
+    [currentViewKey, debouncedSaveScroll]
   );
 
   // Keep latest callbacks in refs so `columns` useMemo stays referentially stable
@@ -862,18 +930,30 @@ const TrackTable = memo(function TrackTable({
     }
   }, [scrollToTrackKey, allRows, viewportHeight]);
 
+  const handleRowClick = useCallback(
+    (track) => {
+      const key = track.trackKey || track.normalizedKey || track.filename;
+      onSelectTrack?.(key);
+    },
+    [onSelectTrack]
+  );
+
   const handleRowContextMenu = useCallback((e, track, rowIndex) => {
     e.preventDefault();
+    const key = track.trackKey || track.normalizedKey || track.filename;
+    onSelectTrack?.(key);
     setRowContextMenu({
       x: e.clientX,
       y: e.clientY,
       track,
       index: rowIndex,
     });
-  }, []);
+  }, [onSelectTrack]);
 
   const handleRowDoubleClick = useCallback(
     (track, idx) => {
+      const key = track.trackKey || track.normalizedKey || track.filename;
+      onSelectTrack?.(key);
       const trimmedQuery = searchQuery ? searchQuery.trim() : '';
       const sourceContext = activePlaylist
         ? { name: activePlaylist.name, id: activePlaylist.id, type: 'playlist' }
@@ -890,7 +970,7 @@ const TrackTable = memo(function TrackTable({
         sourceContext
       );
     },
-    [playTrack, allRows, activePlaylist, searchQuery, filterMissingArt]
+    [playTrack, allRows, activePlaylist, searchQuery, filterMissingArt, onSelectTrack]
   );
 
   // Drag-and-Drop Handlers
@@ -1425,6 +1505,7 @@ const TrackTable = memo(function TrackTable({
                       currentTrack.normalizedKey ||
                       currentTrack.filename) === rowKey;
                   const isFlashActive = flashTrackKey && rowKey === flashTrackKey;
+                  const isSelected = selectedTrackKey && selectedTrackKey === rowKey;
 
                   return (
                     <TrackRow
@@ -1436,12 +1517,14 @@ const TrackTable = memo(function TrackTable({
                       isContextSelected={isContextSelected}
                       isCurrentActive={isCurrentActive}
                       isFlashActive={Boolean(isFlashActive)}
+                      isSelected={Boolean(isSelected)}
                       isReorderEnabled={isReorderEnabled}
                       dropIndicatorClass={dropIndicatorClass}
                       onDragStart={handleDragStart}
                       onDragOver={handleDragOver}
                       onDragEnd={handleDragEnd}
                       onDrop={handleDrop}
+                      onClick={handleRowClick}
                       onDoubleClick={handleRowDoubleClick}
                       onContextMenu={handleRowContextMenu}
                     />

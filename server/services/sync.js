@@ -5,15 +5,26 @@ import { EventEmitter } from 'node:events';
 import { db, expandTilde } from '../db.js';
 import { isSafeExternalVolume } from './volume.js';
 import { syncAllPlaylistsM3u8 } from '../playlists.js';
-import { resolveTargetMusicDir } from '../config.js';
+import { resolveTargetMusicDir, getHardenedEnv } from '../config.js';
+import { syncPlaylistFolders } from './snowflake.js';
 
 export const syncEmitter = new EventEmitter();
 syncEmitter.setMaxListeners(50);
 
 let isSyncing = false;
+let activeRsyncChild = null;
 
 export function getSyncState() {
   return { isSyncing };
+}
+
+export function killActiveRsync() {
+  if (activeRsyncChild) {
+    try {
+      activeRsyncChild.kill('SIGTERM');
+    } catch {}
+    activeRsyncChild = null;
+  }
 }
 
 function emitSyncEvent(type, message, extra = {}) {
@@ -92,11 +103,10 @@ export async function runRsyncToSdCard(requestedVolumePath) {
       targetMusicDir,
     ];
 
-    const playlistExt = (config.playlistFormat || 'm3u').toLowerCase();
     emitSyncEvent('RSYNC', `[SYNC] Syncing vault to SD Card: ${targetMusicDir}`);
     emitSyncEvent(
       'RSYNC',
-      `[RSYNC] Synchronizing audio tracks & .${playlistExt} playlists to "${targetMusicDir}"`
+      `[RSYNC] Synchronizing audio tracks & .m3u playlists to "${targetMusicDir}"`
     );
     emitSyncEvent(
       'RSYNC',
@@ -106,12 +116,12 @@ export async function runRsyncToSdCard(requestedVolumePath) {
     await new Promise((resolve, reject) => {
       const child = spawn('/usr/bin/rsync', rsyncArgs, {
         stdio: ['ignore', 'pipe', 'pipe'],
-        env: {
-          ...process.env,
+        env: getHardenedEnv({
           // Prevent macOS from synthesizing `._*` AppleDouble resource fork files on exFAT/FAT32 SD cards
           COPYFILE_DISABLE: '1',
-        },
+        }),
       });
+      activeRsyncChild = child;
 
       attachLineReader(child.stdout, (line) => {
         emitSyncEvent('RSYNC', `[RSYNC] ${line}`);
@@ -122,16 +132,14 @@ export async function runRsyncToSdCard(requestedVolumePath) {
       });
 
       child.on('error', (err) => {
+        activeRsyncChild = null;
         emitSyncEvent('ERROR', `[ERROR] Failed to spawn /usr/bin/rsync: ${err.message}`);
         reject(err);
       });
 
       child.on('close', (code) => {
+        activeRsyncChild = null;
         if (code === 0) {
-          emitSyncEvent(
-            'DONE',
-            `[DONE] Sync to "${targetMusicDir}" finished cleanly (exit code 0).`
-          );
           resolve();
         } else {
           const errMsg = `[ERROR] rsync exited with code ${code}`;
@@ -140,7 +148,26 @@ export async function runRsyncToSdCard(requestedVolumePath) {
         }
       });
     });
+
+    // Determine SD card root directory (the parent of {sdTarget}/Music/)
+    const sdRoot = path.dirname(targetMusicDir.replace(/\/+$/, ''));
+    try {
+      await syncPlaylistFolders({
+        sdRoot,
+        vaultDir: normalizedVaultDir,
+        exportPlaylistFolders: Boolean(config.exportPlaylistFolders),
+        emitSyncEvent,
+      });
+    } catch (snowflakeErr) {
+      emitSyncEvent('ERROR', `[PLAYLIST FOLDER ERROR] ${snowflakeErr.message}`);
+    }
+
+    emitSyncEvent(
+      'DONE',
+      `[DONE] Sync to "${targetMusicDir}" finished cleanly (exit code 0).`
+    );
   } finally {
+    activeRsyncChild = null;
     isSyncing = false;
   }
 }

@@ -13,6 +13,7 @@ import {
   Music,
 } from 'lucide-react';
 import { useAudioPlayer } from '../context/PlayerContext.jsx';
+import { API_BASE } from '../utils/api.js';
 
 function formatTime(seconds) {
   if (isNaN(seconds) || seconds < 0) return '0:00';
@@ -103,7 +104,7 @@ const NowPlayingBar = memo(function NowPlayingBar({
     );
   }
 
-  const artworkSrc = `/api/artwork/${encodeURIComponent(currentTrack.baseName)}?t=${
+  const artworkSrc = `${API_BASE}/api/artwork/${encodeURIComponent(currentTrack.baseName)}?t=${
     currentTrack.artworkUpdatedAt || 0
   }`;
 

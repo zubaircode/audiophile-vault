@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { FolderOpen, HardDrive, ListMusic, Save, X } from 'lucide-react';
+import { FolderOpen, HardDrive, Save, X } from 'lucide-react';
 import { formatBytes } from './SyncPanel.jsx';
 
 export default function SettingsModal({
@@ -15,18 +15,12 @@ export default function SettingsModal({
   const [sourcePath, setSourcePath] = useState('');
   const [vaultPath, setVaultPath] = useState('');
   const [targetPath, setTargetPath] = useState('');
-  const [playlistFormat, setPlaylistFormat] = useState('m3u');
-  const [emitCompanionM3u8, setEmitCompanionM3u8] = useState(false);
 
   useEffect(() => {
     if (isOpen) {
       setSourcePath(config.sourcePath || '');
       setVaultPath(config.vaultPath || '');
       setTargetPath(config.sdCardPath || selectedVolumePath || '');
-      setPlaylistFormat(config.playlistFormat || 'm3u');
-      setEmitCompanionM3u8(
-        Boolean(config.emitCompanionM3u8 || config.playlistFormat === 'm3u8')
-      );
     }
   }, [isOpen, config, selectedVolumePath]);
 
@@ -39,8 +33,6 @@ export default function SettingsModal({
       vaultPath: vaultPath.trim(),
       targetPath: targetPath.trim(),
       sdCardPath: targetPath.trim(),
-      playlistFormat,
-      emitCompanionM3u8,
     });
   };
 
@@ -147,82 +139,7 @@ export default function SettingsModal({
             </div>
           </div>
 
-          {/* Section 2: Universal Playlist Format Toggle */}
-          <div className="space-y-3 pb-4 border-b border-zinc-200 dark:border-zinc-800/80">
-            <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-amber-600 dark:text-amber-400">
-              <ListMusic className="w-4 h-4" />
-              <span>Universal Playlist Export Format</span>
-            </div>
-
-            <div className="grid grid-cols-2 gap-3">
-              <label
-                className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition ${
-                  playlistFormat === 'm3u'
-                    ? 'bg-amber-500/10 border-amber-500/50 text-zinc-900 dark:text-zinc-100'
-                    : 'bg-zinc-50 dark:bg-zinc-950 border-zinc-200 dark:border-zinc-800 text-zinc-600 dark:text-zinc-400 hover:border-zinc-300 dark:hover:border-zinc-700'
-                }`}
-              >
-                <input
-                  type="radio"
-                  name="playlistFormat"
-                  value="m3u"
-                  checked={playlistFormat === 'm3u'}
-                  onChange={() => setPlaylistFormat('m3u')}
-                  className="mt-0.5 accent-amber-500"
-                />
-                <div>
-                  <div className="text-xs font-semibold font-mono text-zinc-900 dark:text-zinc-200">
-                    .m3u (Universal Primary)
-                  </div>
-                  <div className="text-[11px] text-zinc-500 dark:text-zinc-400 mt-0.5">
-                    Universal CRLF format for hardware players (Echo Nano) and broad player compatibility.
-                  </div>
-                </div>
-              </label>
-
-              <label
-                className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition ${
-                  playlistFormat === 'm3u8'
-                    ? 'bg-amber-500/10 border-amber-500/50 text-zinc-900 dark:text-zinc-100'
-                    : 'bg-zinc-50 dark:bg-zinc-950 border-zinc-200 dark:border-zinc-800 text-zinc-600 dark:text-zinc-400 hover:border-zinc-300 dark:hover:border-zinc-700'
-                }`}
-              >
-                <input
-                  type="radio"
-                  name="playlistFormat"
-                  value="m3u8"
-                  checked={playlistFormat === 'm3u8'}
-                  onChange={() => {
-                    setPlaylistFormat('m3u8');
-                    setEmitCompanionM3u8(true);
-                  }}
-                  className="mt-0.5 accent-amber-500"
-                />
-                <div>
-                  <div className="text-xs font-semibold font-mono text-zinc-900 dark:text-zinc-200">
-                    .m3u8 (UTF-8 Extended)
-                  </div>
-                  <div className="text-[11px] text-zinc-500 dark:text-zinc-400 mt-0.5">
-                    Recommended for Android / software players requiring explicit UTF-8 extensions.
-                  </div>
-                </div>
-              </label>
-            </div>
-
-            <label className="flex items-center gap-2.5 pt-1 text-xs text-zinc-700 dark:text-zinc-300 hover:text-zinc-900 dark:hover:text-white cursor-pointer select-none">
-              <input
-                type="checkbox"
-                checked={emitCompanionM3u8}
-                onChange={(e) => setEmitCompanionM3u8(e.target.checked)}
-                className="accent-amber-500 rounded cursor-pointer"
-              />
-              <span>
-                Also emit companion <code className="text-amber-600 dark:text-amber-400 font-mono">.m3u8</code> files alongside primary <code className="text-amber-600 dark:text-amber-400 font-mono">.m3u</code> (supports strict Android/HiBy/Poweramp players)
-              </span>
-            </label>
-          </div>
-
-          {/* Section 3: Master Source and Vault Paths */}
+          {/* Section 2: Master Source and Vault Paths */}
           <div className="space-y-4">
             <div>
               <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500 dark:text-zinc-400 mb-1.5">

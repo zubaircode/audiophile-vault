@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { API_BASE } from '../utils/api.js';
 import {
   X,
   Upload,
@@ -150,6 +151,8 @@ export default function ArtworkModal({
   onClose,
   onUploadArtwork,
   onRemoveArtwork,
+  onFetchArtwork,
+  isFetchingArtwork = false,
 }) {
   const totalAlbumTracks = albumTracksCount ?? albumTrackCount ?? 1;
 
@@ -168,11 +171,11 @@ export default function ArtworkModal({
   const canRemoveArt = Boolean(track?.hasArtwork) || hasArt;
 
   const artworkUrl = baseName
-    ? `/api/artwork/${encodeURIComponent(baseName)}?t=${cacheBuster}`
+    ? `${API_BASE}/api/artwork/${encodeURIComponent(baseName)}?t=${cacheBuster}`
     : '';
 
   const downloadUrl = baseName
-    ? `/api/artwork/${encodeURIComponent(baseName)}/download`
+    ? `${API_BASE}/api/artwork/${encodeURIComponent(baseName)}/download`
     : '';
 
   // Reset error states when track or its artwork timestamp changes
@@ -257,7 +260,17 @@ export default function ArtworkModal({
     }
   };
 
-  const busy = isUploading || isDeleting;
+  const handleFetchClick = async () => {
+    if (!onFetchArtwork || busy) return;
+    setLocalError('');
+    try {
+      await onFetchArtwork({ track, applyToAlbum });
+    } catch (err) {
+      setLocalError(err.message || 'Failed to download artwork.');
+    }
+  };
+
+  const busy = isUploading || isDeleting || isFetchingArtwork;
 
   return (
     <div
@@ -266,7 +279,7 @@ export default function ArtworkModal({
       }}
       className="fixed inset-0 z-50 bg-black/60 dark:bg-black/75 backdrop-blur-md flex items-center justify-center p-4 select-none animate-in fade-in duration-150"
     >
-      <div className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700/90 rounded-2xl w-full max-w-xl shadow-2xl overflow-hidden flex flex-col">
+      <div className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700/90 rounded-2xl w-full max-w-2xl shadow-2xl overflow-hidden flex flex-col">
         {/* 1. MODAL HEADER */}
         <div className="px-6 py-4 bg-zinc-50 dark:bg-zinc-900/90 border-b border-zinc-200 dark:border-zinc-800 flex items-start justify-between gap-4">
           <div className="min-w-0">
@@ -318,6 +331,7 @@ export default function ArtworkModal({
             className="hidden"
             onChange={(e) => {
               const f = e.target.files?.[0];
+              e.target.value = '';
               if (f) handleFileSelected(f);
             }}
           />
@@ -426,14 +440,14 @@ export default function ArtworkModal({
         </div>
 
         {/* 4. ACTION CONTROLS BAR */}
-        <div className="px-6 py-4 bg-zinc-50 dark:bg-zinc-950/90 border-t border-zinc-200 dark:border-zinc-800 flex flex-wrap items-center justify-between gap-3">
+        <div className="px-6 py-4 bg-zinc-50 dark:bg-zinc-950/90 border-t border-zinc-200 dark:border-zinc-800 flex items-center justify-between gap-3">
           {/* Left: Remove Art */}
-          <div>
+          <div className="shrink-0">
             <button
               type="button"
               onClick={handleRemoveClick}
               disabled={!canRemoveArt || busy}
-              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-medium bg-white dark:bg-zinc-900 hover:bg-red-50 dark:hover:bg-red-950/60 text-zinc-700 dark:text-zinc-200 hover:text-red-600 dark:hover:text-red-200 border border-zinc-200 dark:border-zinc-700 hover:border-red-300 dark:hover:border-red-700/80 transition disabled:opacity-40 disabled:cursor-not-allowed shadow-xs"
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-medium whitespace-nowrap bg-white dark:bg-zinc-900 hover:bg-red-50 dark:hover:bg-red-950/60 text-zinc-700 dark:text-zinc-200 hover:text-red-600 dark:hover:text-red-200 border border-zinc-200 dark:border-zinc-700 hover:border-red-300 dark:hover:border-red-700/80 transition disabled:opacity-40 disabled:cursor-not-allowed shadow-xs"
             >
               {isDeleting ? (
                 <Loader2 className="w-3.5 h-3.5 animate-spin text-red-500" />
@@ -450,25 +464,38 @@ export default function ArtworkModal({
             </button>
           </div>
 
-          {/* Right: Download Art & Replace / Upload Art */}
-          <div className="flex items-center gap-2.5">
-            {hasArt ? (
+          {/* Right: Save Image, Download Artwork & Replace / Upload Art */}
+          <div className="flex items-center justify-end gap-2 shrink-0">
+            {hasArt && (
               <a
                 href={downloadUrl}
                 download={`${baseName}.jpg`}
-                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-medium bg-white dark:bg-zinc-800 hover:bg-zinc-100 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-200 border border-zinc-200 dark:border-zinc-700 transition shadow-xs"
+                title="Save embedded artwork image to disk"
+                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium whitespace-nowrap bg-white dark:bg-zinc-800 hover:bg-zinc-100 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-200 border border-zinc-200 dark:border-zinc-700 transition shadow-xs"
               >
                 <Download className="w-3.5 h-3.5 text-sky-500 dark:text-cyan-400" />
-                <span>Download Art</span>
+                <span>Save Image</span>
               </a>
-            ) : (
+            )}
+
+            {onFetchArtwork && (
               <button
                 type="button"
-                disabled
-                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-medium bg-zinc-100 dark:bg-zinc-900 text-zinc-400 dark:text-zinc-600 border border-zinc-200 dark:border-zinc-800 cursor-not-allowed"
+                onClick={handleFetchClick}
+                disabled={busy}
+                title={
+                  applyToAlbum && totalAlbumTracks > 1
+                    ? `Download artwork online for ${totalAlbumTracks} album tracks`
+                    : 'Download artwork online for this track'
+                }
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-medium whitespace-nowrap bg-white dark:bg-zinc-800 hover:bg-sky-50 dark:hover:bg-sky-950/60 text-zinc-700 dark:text-zinc-200 hover:text-sky-700 dark:hover:text-sky-300 border border-zinc-200 dark:border-zinc-700 hover:border-sky-300 dark:hover:border-sky-700/80 transition disabled:opacity-40 disabled:cursor-not-allowed shadow-xs cursor-pointer"
               >
-                <Download className="w-3.5 h-3.5" />
-                <span>Download Art</span>
+                {isFetchingArtwork ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin text-sky-500" />
+                ) : (
+                  <Sparkles className="w-3.5 h-3.5 text-sky-500 dark:text-cyan-400" />
+                )}
+                <span>{isFetchingArtwork ? 'Downloading…' : 'Download Artwork'}</span>
               </button>
             )}
 
@@ -476,12 +503,12 @@ export default function ArtworkModal({
               type="button"
               onClick={() => fileInputRef.current?.click()}
               disabled={busy}
-              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-zinc-950 shadow-md shadow-amber-500/10 transition disabled:opacity-50"
+              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold whitespace-nowrap bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-zinc-950 shadow-md shadow-amber-500/10 transition disabled:opacity-50 cursor-pointer"
             >
               {isUploading ? (
                 <Loader2 className="w-3.5 h-3.5 animate-spin" />
               ) : (
-                <Sparkles className="w-3.5 h-3.5" />
+                <Upload className="w-3.5 h-3.5" />
               )}
               <span>{hasArt ? 'Replace / Upload Art…' : 'Browse Image…'}</span>
             </button>

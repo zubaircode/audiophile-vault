@@ -6,6 +6,7 @@ import React, {
   useEffect,
   useCallback,
 } from 'react';
+import { API_BASE } from '../utils/api.js';
 
 const PlayerContext = createContext(null);
 
@@ -67,7 +68,7 @@ export function PlayerProvider({ children }) {
         setQueueSource(sourceContext);
       }
 
-      const streamUrl = `/api/stream/${encodeURIComponent(track.filename)}`;
+      const streamUrl = `${API_BASE}/api/stream/${encodeURIComponent(track.filename)}`;
       audio.src = streamUrl;
       audio.currentTime = 0;
       setCurrentTime(0);
@@ -271,7 +272,7 @@ export function PlayerProvider({ children }) {
         album: currentTrack.album || 'Audiophile Vault',
         artwork: [
           {
-            src: `/api/artwork/${encodeURIComponent(currentTrack.baseName)}`,
+            src: `${API_BASE}/api/artwork/${encodeURIComponent(currentTrack.baseName)}`,
             sizes: '512x512',
             type: 'image/jpeg',
           },

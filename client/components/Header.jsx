@@ -1,6 +1,5 @@
-import React, { memo } from 'react';
+import React, { memo, useState, useEffect } from 'react';
 import {
-  Disc,
   Settings,
   Database,
   HardDrive,
@@ -10,6 +9,7 @@ import {
   Loader2,
   Sun,
   Moon,
+  Snowflake,
 } from 'lucide-react';
 import { formatBytes } from './UnifiedControlBar.jsx';
 import { useTheme } from '../context/ThemeContext.jsx';
@@ -27,36 +27,99 @@ const Header = memo(function Header({
   onStartArtworkFetch,
   onStopArtworkFetch,
   onOpenSettings,
+  exportPlaylistFolders = false,
+  onToggleExportPlaylistFolders,
 }) {
   const { theme, toggleTheme } = useTheme();
 
+  const isElectron = typeof window !== 'undefined' && Boolean(window.electronAPI?.isElectron);
+  const [isFullScreen, setIsFullScreen] = useState(false);
+
+  useEffect(() => {
+    if (!isElectron || !window.electronAPI) return;
+
+    if (window.electronAPI.isFullScreen) {
+      window.electronAPI
+        .isFullScreen()
+        .then((fs) => setIsFullScreen(Boolean(fs)))
+        .catch(() => {});
+    }
+
+    if (window.electronAPI.onFullScreenChange) {
+      const cleanup = window.electronAPI.onFullScreenChange((val) => {
+        setIsFullScreen(Boolean(val));
+      });
+      return cleanup;
+    }
+  }, [isElectron]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.matchMedia) return;
+    const mediaQuery = window.matchMedia('(display-mode: fullscreen)');
+    const handleMediaChange = (e) => {
+      setIsFullScreen((prev) => (e.matches ? true : prev));
+    };
+    if (mediaQuery.matches) setIsFullScreen(true);
+    mediaQuery.addEventListener?.('change', handleMediaChange);
+    return () => mediaQuery.removeEventListener?.('change', handleMediaChange);
+  }, []);
+
+  const isNonDragTarget = (target) => {
+    if (!target || typeof target.closest !== 'function') return false;
+    return Boolean(
+      target.closest('button, input, a, select, textarea, [role="switch"], [data-no-drag]')
+    );
+  };
+
+  const handleHeaderMouseDown = (e) => {
+    if (e.button !== 0) return;
+    if (isNonDragTarget(e.target)) return;
+    window.webkit?.messageHandlers?.avBridge?.postMessage({ type: 'windowDrag' });
+  };
+
+  const handleHeaderDoubleClick = (e) => {
+    if (isNonDragTarget(e.target)) return;
+    window.webkit?.messageHandlers?.avBridge?.postMessage({ type: 'windowZoom' });
+  };
+
   return (
-    <header className="bg-white dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100 border-b border-zinc-200 dark:border-zinc-800 px-6 py-2.5 transition-colors">
-      <div className="w-full flex flex-wrap items-center justify-between gap-4">
-        {/* App Brand Identity (Scaled-up title, no path subtitle) */}
-        <div className="flex items-center gap-3.5">
-          <div className="w-11 h-11 rounded-xl bg-gradient-to-br from-amber-500/20 via-zinc-100 dark:via-zinc-900 to-cyan-500/20 border border-amber-500/40 flex items-center justify-center shadow-inner shrink-0">
-            <Disc
-              className={`w-6 h-6 text-amber-500 dark:text-amber-400 ${
-                isWorking ? 'animate-[spin_6s_linear_infinite]' : ''
-              }`}
-            />
-          </div>
-          <h1 className="text-2xl font-bold tracking-tight text-zinc-900 dark:text-zinc-100 whitespace-nowrap">
-            Audiophile Vault
-          </h1>
-        </div>
+    <header
+      data-window-drag="true"
+      onMouseDown={handleHeaderMouseDown}
+      onDoubleClick={handleHeaderDoubleClick}
+      style={{ WebkitAppRegion: 'drag' }}
+      className={`bg-white dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100 border-b border-zinc-200 dark:border-zinc-800 pr-6 py-2.5 transition-all duration-150 select-none ${
+        isElectron && !isFullScreen ? 'pl-20' : 'pl-4'
+      }`}
+    >
+      <div className="w-full flex flex-wrap items-center justify-end gap-4">
+        {/* Draggable grab area spanning the left section */}
+        <div
+          data-window-drag="true"
+          style={{ WebkitAppRegion: 'drag' }}
+          className="flex-1 min-w-8 h-14"
+        />
 
         {/* Standardized Height (h-14) Stat Cards & Settings Trigger */}
-        <div className="flex flex-wrap items-center gap-2.5">
+        <div
+          data-no-drag="true"
+          style={{ WebkitAppRegion: 'no-drag' }}
+          className="flex flex-wrap items-center gap-2.5"
+        >
           {/* 0. THEME TOGGLE (Positioned immediately to the left of VAULT TRACKS) */}
-          <div className="h-14 px-3.5 flex flex-col justify-center rounded-lg bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 shadow-xs dark:shadow-none transition-colors">
+          <div
+            data-no-drag="true"
+            style={{ WebkitAppRegion: 'no-drag' }}
+            className="h-14 px-3.5 flex flex-col justify-center rounded-lg bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 shadow-xs dark:shadow-none transition-colors"
+          >
             <span className="text-[10px] font-semibold text-zinc-500 dark:text-zinc-500 uppercase tracking-wider leading-none mb-1.5 select-none">
               THEME
             </span>
             <button
               type="button"
               role="switch"
+              data-no-drag="true"
+              style={{ WebkitAppRegion: 'no-drag' }}
               aria-checked={theme === 'dark'}
               aria-label="Toggle Light and Dark Mode"
               onClick={toggleTheme}
@@ -109,6 +172,8 @@ const Header = memo(function Header({
               {/* Filter Missing Art Icon Toggle Button */}
               <button
                 type="button"
+                data-no-drag="true"
+                style={{ WebkitAppRegion: 'no-drag' }}
                 onClick={onToggleMissingArtFilter}
                 aria-pressed={filterMissingArt}
                 title={
@@ -129,6 +194,8 @@ const Header = memo(function Header({
               {isFetchingArtwork ? (
                 <button
                   type="button"
+                  data-no-drag="true"
+                  style={{ WebkitAppRegion: 'no-drag' }}
                   onClick={onStopArtworkFetch}
                   title="Stop artwork lookup"
                   className="p-1 rounded-md border border-red-500/50 bg-red-500/20 text-red-600 dark:text-red-300 hover:bg-red-500/30 transition cursor-pointer"
@@ -138,6 +205,8 @@ const Header = memo(function Header({
               ) : (
                 <button
                   type="button"
+                  data-no-drag="true"
+                  style={{ WebkitAppRegion: 'no-drag' }}
                   onClick={onStartArtworkFetch}
                   disabled={isWorking}
                   title={
@@ -194,9 +263,32 @@ const Header = memo(function Header({
             </div>
           </div>
 
-          {/* 5. Settings Trigger Button (h-14 matching block) */}
+          {/* 5. SNOWSKY Mode (Playlist Folder Export) Toggle Button */}
           <button
             type="button"
+            role="switch"
+            data-no-drag="true"
+            style={{ WebkitAppRegion: 'no-drag' }}
+            aria-checked={exportPlaylistFolders}
+            onClick={onToggleExportPlaylistFolders}
+            title={`Snowsky Mode: Export Playlists as Root Folders (Auto-enabled for SNOWSKY drives) — ${
+              exportPlaylistFolders ? 'Active' : 'Inactive'
+            }`}
+            aria-label="Snowsky Mode: Export Playlists as Root Folders (Auto-enabled for SNOWSKY drives)"
+            className={`h-14 w-14 rounded-lg flex items-center justify-center transition-colors shadow-xs dark:shadow-none shrink-0 cursor-pointer ${
+              exportPlaylistFolders
+                ? 'bg-sky-500/15 border border-sky-500/50 text-sky-600 dark:text-sky-400 hover:bg-sky-500/25'
+                : 'bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 text-zinc-500 dark:text-zinc-400 hover:border-zinc-300 dark:hover:border-zinc-700 hover:text-zinc-700 dark:hover:text-zinc-200'
+            }`}
+          >
+            <Snowflake className="w-5 h-5" />
+          </button>
+
+          {/* 6. Settings Trigger Button (h-14 matching block) */}
+          <button
+            type="button"
+            data-no-drag="true"
+            style={{ WebkitAppRegion: 'no-drag' }}
             onClick={onOpenSettings}
             title="Configure Directories & Target SD Card Settings"
             className="h-14 w-14 rounded-lg bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 hover:border-amber-500/50 dark:hover:border-amber-500/50 hover:bg-zinc-50 dark:hover:bg-zinc-800/80 text-zinc-700 dark:text-zinc-300 hover:text-amber-600 dark:hover:text-amber-400 flex items-center justify-center transition-colors shadow-xs dark:shadow-none shrink-0 cursor-pointer"

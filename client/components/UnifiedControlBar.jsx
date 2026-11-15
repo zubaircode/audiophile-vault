@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { useAudioPlayer } from '../context/PlayerContext.jsx';
 import { useTheme } from '../context/ThemeContext.jsx';
+import { API_BASE } from '../utils/api.js';
 
 export function formatBytes(bytes) {
   if (!bytes || bytes <= 0) return '0.0 GB';
@@ -124,7 +125,7 @@ const UnifiedControlBar = memo(function UnifiedControlBar({
   };
 
   const artworkSrc = currentTrack?.baseName
-    ? `/api/artwork/${encodeURIComponent(currentTrack.baseName)}${
+    ? `${API_BASE}/api/artwork/${encodeURIComponent(currentTrack.baseName)}${
         currentTrack.artworkUpdatedAt ? `?v=${currentTrack.artworkUpdatedAt}` : ''
       }`
     : '';

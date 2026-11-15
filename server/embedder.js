@@ -4,9 +4,14 @@ import path from 'node:path';
 import os from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { EventEmitter } from 'node:events';
 import { parseFile } from 'music-metadata';
+import { getHardenedEnv } from './config.js';
 
 const execFileAsync = promisify(execFile);
+
+export const embedderEmitter = new EventEmitter();
+embedderEmitter.setMaxListeners(50);
 
 const ALLOWED_IMAGE_MIME_TYPES = new Set([
   'image/jpeg',
@@ -15,42 +20,12 @@ const ALLOWED_IMAGE_MIME_TYPES = new Set([
   'image/webp',
 ]);
 
-// Cached CLI binary resolution (`metaflac`, `ffmpeg`)
-const cliCache = new Map();
-
-async function resolveCliBinary(binaryName) {
-  if (cliCache.has(binaryName)) {
-    return cliCache.get(binaryName);
+function getContainerTransformer(ext) {
+  if (ext === '.mp3') return transformMp3Id3v2;
+  if (ext === '.flac') return transformFlacPictureBlocks;
+  if (ext === '.m4a' || ext === '.alac' || ext === '.mp4' || ext === '.aac') {
+    return transformMp4CovrAtom;
   }
-
-  const candidatePaths = [
-    `/opt/homebrew/bin/${binaryName}`,
-    `/usr/local/bin/${binaryName}`,
-    `/usr/bin/${binaryName}`,
-  ];
-
-  for (const candidate of candidatePaths) {
-    try {
-      await fsp.access(candidate, fs.constants.X_OK);
-      cliCache.set(binaryName, candidate);
-      return candidate;
-    } catch {
-      // Continue checking candidates
-    }
-  }
-
-  try {
-    const { stdout } = await execFileAsync('/usr/bin/which', [binaryName]);
-    const resolved = stdout.trim();
-    if (resolved) {
-      cliCache.set(binaryName, resolved);
-      return resolved;
-    }
-  } catch {
-    // Binary not found on PATH
-  }
-
-  cliCache.set(binaryName, null);
   return null;
 }
 
@@ -116,7 +91,9 @@ export async function normalizeToJpegBuffer(buffer, mimeType = 'image/jpeg') {
     if (exceedsBounds || isPngMagic || isWebpMagic) {
       sipsArgs.splice(3, 0, '-Z', String(MAX_EMBEDDED_ARTWORK_DIMENSION));
     }
-    await execFileAsync('/usr/bin/sips', sipsArgs);
+    await execFileAsync('/usr/bin/sips', sipsArgs, {
+      env: getHardenedEnv(),
+    });
     const converted = await fsp.readFile(tmpOut);
     if (converted && converted.length > 0) {
       return { buffer: converted, mimeType: 'image/jpeg' };
@@ -934,86 +911,25 @@ export async function embedArtBuffer(
     };
   }
 
+  const transformContainer = getContainerTransformer(ext);
+  if (!transformContainer) {
+    return {
+      embedded: false,
+      unsupportedContainer: true,
+      extension: ext,
+    };
+  }
+
   const stamp = `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
   const tmpAudioPath = `${filePath}.${stamp}.tmp${ext}`;
-  const tmpArtPath = path.join(os.tmpdir(), `av_art_${stamp}.jpg`);
 
   try {
-    if (ext === '.mp3') {
-      const originalBuf = await fsp.readFile(filePath);
-      const updatedBuf = transformMp3Id3v2(originalBuf, {
-        imageBuffer: jpegBuffer,
-        mimeType,
-      });
-      await fsp.writeFile(tmpAudioPath, updatedBuf);
-    } else if (ext === '.flac') {
-      const metaflacBin = await resolveCliBinary('metaflac');
-      if (metaflacBin) {
-        await fsp.copyFile(filePath, tmpAudioPath);
-        await fsp.writeFile(tmpArtPath, jpegBuffer);
-        await execFileAsync(metaflacBin, [
-          '--remove',
-          '--block-type=PICTURE',
-          `--import-picture-from=${tmpArtPath}`,
-          tmpAudioPath,
-        ]);
-      } else {
-        const originalBuf = await fsp.readFile(filePath);
-        const updatedBuf = transformFlacPictureBlocks(originalBuf, {
-          imageBuffer: jpegBuffer,
-          mimeType,
-        });
-        await fsp.writeFile(tmpAudioPath, updatedBuf);
-      }
-    } else if (
-      ext === '.m4a' ||
-      ext === '.alac' ||
-      ext === '.mp4' ||
-      ext === '.aac'
-    ) {
-      const ffmpegBin = await resolveCliBinary('ffmpeg');
-      let usedFfmpeg = false;
-
-      if (ffmpegBin) {
-        try {
-          await fsp.writeFile(tmpArtPath, jpegBuffer);
-          await execFileAsync(ffmpegBin, [
-            '-y',
-            '-i',
-            filePath,
-            '-i',
-            tmpArtPath,
-            '-map',
-            '0:a',
-            '-map',
-            '1',
-            '-codec',
-            'copy',
-            '-disposition:v:0',
-            'attached_pic',
-            tmpAudioPath,
-          ]);
-          usedFfmpeg = true;
-        } catch {
-          usedFfmpeg = false;
-        }
-      }
-
-      if (!usedFfmpeg) {
-        const originalBuf = await fsp.readFile(filePath);
-        const updatedBuf = transformMp4CovrAtom(originalBuf, {
-          imageBuffer: jpegBuffer,
-          mimeType,
-        });
-        await fsp.writeFile(tmpAudioPath, updatedBuf);
-      }
-    } else {
-      return {
-        embedded: false,
-        unsupportedContainer: true,
-        extension: ext,
-      };
-    }
+    const originalBuf = await fsp.readFile(filePath);
+    const updatedBuf = transformContainer(originalBuf, {
+      imageBuffer: jpegBuffer,
+      mimeType,
+    });
+    await fsp.writeFile(tmpAudioPath, updatedBuf);
 
     // Verify the temporary file is non-empty and readable before atomic replace
     const tmpStat = await fsp.stat(tmpAudioPath);
@@ -1033,8 +949,6 @@ export async function embedArtBuffer(
   } catch (err) {
     await fsp.unlink(tmpAudioPath).catch(() => {});
     throw err;
-  } finally {
-    await fsp.unlink(tmpArtPath).catch(() => {});
   }
 }
 
@@ -1052,67 +966,18 @@ export async function removeEmbeddedArt(filePath) {
     return { removed: false, unsupportedContainer: true, extension: ext };
   }
 
+  const transformContainer = getContainerTransformer(ext);
+  if (!transformContainer) {
+    return { removed: false, unsupportedContainer: true, extension: ext };
+  }
+
   const stamp = `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
   const tmpAudioPath = `${filePath}.${stamp}.tmp${ext}`;
 
   try {
-    if (ext === '.mp3') {
-      const originalBuf = await fsp.readFile(filePath);
-      const updatedBuf = transformMp3Id3v2(originalBuf, { imageBuffer: null });
-      await fsp.writeFile(tmpAudioPath, updatedBuf);
-    } else if (ext === '.flac') {
-      const metaflacBin = await resolveCliBinary('metaflac');
-      if (metaflacBin) {
-        await fsp.copyFile(filePath, tmpAudioPath);
-        await execFileAsync(metaflacBin, [
-          '--remove',
-          '--block-type=PICTURE',
-          tmpAudioPath,
-        ]);
-      } else {
-        const originalBuf = await fsp.readFile(filePath);
-        const updatedBuf = transformFlacPictureBlocks(originalBuf, {
-          imageBuffer: null,
-        });
-        await fsp.writeFile(tmpAudioPath, updatedBuf);
-      }
-    } else if (
-      ext === '.m4a' ||
-      ext === '.alac' ||
-      ext === '.mp4' ||
-      ext === '.aac'
-    ) {
-      const ffmpegBin = await resolveCliBinary('ffmpeg');
-      let usedFfmpeg = false;
-
-      if (ffmpegBin) {
-        try {
-          await execFileAsync(ffmpegBin, [
-            '-y',
-            '-i',
-            filePath,
-            '-map',
-            '0:a',
-            '-codec',
-            'copy',
-            tmpAudioPath,
-          ]);
-          usedFfmpeg = true;
-        } catch {
-          usedFfmpeg = false;
-        }
-      }
-
-      if (!usedFfmpeg) {
-        const originalBuf = await fsp.readFile(filePath);
-        const updatedBuf = transformMp4CovrAtom(originalBuf, {
-          imageBuffer: null,
-        });
-        await fsp.writeFile(tmpAudioPath, updatedBuf);
-      }
-    } else {
-      return { removed: false, unsupportedContainer: true, extension: ext };
-    }
+    const originalBuf = await fsp.readFile(filePath);
+    const updatedBuf = transformContainer(originalBuf, { imageBuffer: null });
+    await fsp.writeFile(tmpAudioPath, updatedBuf);
 
     const tmpStat = await fsp.stat(tmpAudioPath);
     if (!tmpStat.isFile() || tmpStat.size < 64) {

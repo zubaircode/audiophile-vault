@@ -3,6 +3,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { getHardenedEnv } from '../config.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -81,7 +82,9 @@ export async function isSafeExternalVolume(volumePath) {
  */
 async function getDiskSpaceBytes(mountPath) {
   try {
-    const { stdout } = await execFileAsync('/bin/df', ['-k', mountPath]);
+    const { stdout } = await execFileAsync('/bin/df', ['-k', mountPath], {
+      env: getHardenedEnv(),
+    });
     const lines = stdout.trim().split('\n');
     if (lines.length < 2) return { freeSpace: 0, totalSpace: 0 };
 
@@ -153,10 +156,11 @@ export async function ejectVolume(volumePath) {
     throw new Error(`Cannot eject volume: ${check.reason}`);
   }
 
-  const { stdout, stderr } = await execFileAsync('/usr/sbin/diskutil', [
-    'unmountDisk',
-    check.resolvedVolumePath,
-  ]);
+  const { stdout, stderr } = await execFileAsync(
+    '/usr/sbin/diskutil',
+    ['unmountDisk', check.resolvedVolumePath],
+    { env: getHardenedEnv() }
+  );
 
   return {
     success: true,

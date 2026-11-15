@@ -5,12 +5,25 @@ import { isSafeExternalVolume, listMountedVolumes } from './services/volume.js';
 
 const HOME_DIR = os.homedir();
 
+export const HARDENED_PATH = '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin';
+
+/**
+ * Returns a hardened process environment guaranteeing common and system binary lookup paths.
+ * macOS GUI-launched apps do not inherit interactive terminal shell `$PATH`.
+ */
+export function getHardenedEnv(extra = {}) {
+  return {
+    ...process.env,
+    PATH: HARDENED_PATH,
+    ...extra,
+  };
+}
+
 export const DEFAULT_CONFIG = {
   sourcePath: path.join(HOME_DIR, 'Music/Music/Media.localized/Music/'),
   vaultPath: path.join(HOME_DIR, 'Music/AudiophileVault/'),
   sdCardPath: process.env.AV_TARGET_SD_PATH || '',
-  playlistFormat: 'm3u',
-  emitCompanionM3u8: false,
+  exportPlaylistFolders: false,
 };
 
 /**
@@ -21,7 +34,7 @@ export function getConfig() {
 }
 
 /**
- * Updates application configuration (`sourcePath`, `vaultPath`, `sdCardPath`, `playlistFormat`).
+ * Updates application configuration (`sourcePath`, `vaultPath`, `sdCardPath`, `exportPlaylistFolders`).
  */
 export function updateConfig(partial) {
   return db.updateConfig(partial);

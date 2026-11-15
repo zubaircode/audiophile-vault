@@ -1,0 +1,194 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    
+    <filter id="clear-headphone-shadow" x="-20%" y="-15%" width="140%" height="135%">
+      <feDropShadow dx="0" dy="16" stdDeviation="20" flood-color="#000000" flood-opacity="0.35"/>
+    </filter>
+
+    <filter id="clear-cup-depth" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="3" dy="6" stdDeviation="8" flood-color="#000000" flood-opacity="0.25"/>
+    </filter>
+
+    <linearGradient id="clear-headband-outer-wire" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#e4e4e7"/>
+      <stop offset="30%" stop-color="#ffffff"/>
+      <stop offset="70%" stop-color="#ffffff"/>
+      <stop offset="100%" stop-color="#e4e4e7"/>
+    </linearGradient>
+
+    <linearGradient id="clear-headband-inner-wire" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#d4d4d8"/>
+      <stop offset="40%" stop-color="#f4f4f5"/>
+      <stop offset="80%" stop-color="#f4f4f5"/>
+      <stop offset="100%" stop-color="#d4d4d8"/>
+    </linearGradient>
+
+    <linearGradient id="clear-apex-pad-grad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="50%" stop-color="#f4f4f5"/>
+      <stop offset="100%" stop-color="#e4e4e7"/>
+    </linearGradient>
+
+    <linearGradient id="clear-shell-grad-left" x1="15%" y1="10%" x2="85%" y2="90%">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="35%" stop-color="#f4f4f5"/>
+      <stop offset="70%" stop-color="#e4e4e7"/>
+      <stop offset="100%" stop-color="#d4d4d8"/>
+    </linearGradient>
+
+    <linearGradient id="clear-shell-plate-left" x1="15%" y1="15%" x2="85%" y2="85%">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="40%" stop-color="#f4f4f5"/>
+      <stop offset="80%" stop-color="#e4e4e7"/>
+      <stop offset="100%" stop-color="#d4d4d8"/>
+    </linearGradient>
+
+    <linearGradient id="clear-shell-grad-right" x1="85%" y1="10%" x2="15%" y2="90%">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="35%" stop-color="#f4f4f5"/>
+      <stop offset="70%" stop-color="#e4e4e7"/>
+      <stop offset="100%" stop-color="#d4d4d8"/>
+    </linearGradient>
+
+    <linearGradient id="clear-shell-plate-right" x1="85%" y1="15%" x2="15%" y2="85%">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="40%" stop-color="#f4f4f5"/>
+      <stop offset="80%" stop-color="#e4e4e7"/>
+      <stop offset="100%" stop-color="#d4d4d8"/>
+    </linearGradient>
+
+    <linearGradient id="clear-earpad-leather" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#e4e4e7"/>
+      <stop offset="50%" stop-color="#d4d4d8"/>
+      <stop offset="100%" stop-color="#a1a1aa"/>
+    </linearGradient>
+
+    <linearGradient id="clear-hinge-metal" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="50%" stop-color="#e4e4e7"/>
+      <stop offset="100%" stop-color="#cbd5e1"/>
+    </linearGradient>
+
+    <radialGradient id="clear-amber-accent-glow" cx="40%" cy="35%" r="60%">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="50%" stop-color="#fef08a"/>
+      <stop offset="100%" stop-color="#f59e0b"/>
+    </radialGradient>
+    
+  </defs>
+
+  <!-- Transparent background: Crisp bright silver/white luminance version of Sony Eggo headphones -->
+  
+  <g filter="url(#clear-headphone-shadow)">
+    <!-- A. DUAL-WIRE STEEL HEADBAND ARCH -->
+    <!-- Outer Stainless Wire -->
+    <path d="M 324,472 C 324,286 408,212 512,212 C 616,212 700,286 700,472"
+          fill="none"
+          stroke="url(#clear-headband-outer-wire)"
+          stroke-width="7"
+          stroke-linecap="round"/>
+
+    <!-- Inner Stainless Wire -->
+    <path d="M 342,482 C 342,316 418,246 512,246 C 606,246 682,316 682,482"
+          fill="none"
+          stroke="url(#clear-headband-inner-wire)"
+          stroke-width="7"
+          stroke-linecap="round"/>
+
+    <!-- Specular Track Highlights -->
+    <path d="M 324,472 C 324,286 408,212 512,212 C 616,212 700,286 700,472"
+          fill="none"
+          stroke="#ffffff"
+          stroke-width="1.5"
+          stroke-linecap="round"
+          opacity="0.6"/>
+
+    <!-- B. HEADBAND APEX CUSHION PAD -->
+    <rect x="424" y="202" width="176" height="34" rx="14"
+          fill="url(#clear-apex-pad-grad)"
+          stroke="#cbd5e1"
+          stroke-width="1.5"/>
+
+    <line x1="452" y1="206" x2="452" y2="232" stroke="#94a3b8" stroke-width="2" stroke-linecap="round"/>
+    <line x1="482" y1="206" x2="482" y2="232" stroke="#94a3b8" stroke-width="2" stroke-linecap="round"/>
+    <line x1="512" y1="206" x2="512" y2="232" stroke="#94a3b8" stroke-width="2" stroke-linecap="round"/>
+    <line x1="542" y1="206" x2="542" y2="232" stroke="#94a3b8" stroke-width="2" stroke-linecap="round"/>
+    <line x1="572" y1="206" x2="572" y2="232" stroke="#94a3b8" stroke-width="2" stroke-linecap="round"/>
+
+    <rect x="420" y="200" width="10" height="38" rx="3" fill="url(#clear-hinge-metal)" stroke="#cbd5e1" stroke-width="1"/>
+    <rect x="594" y="200" width="10" height="38" rx="3" fill="url(#clear-hinge-metal)" stroke="#cbd5e1" stroke-width="1"/>
+
+    <!-- C. ARTICULATED FOLDING HINGE YOKES -->
+    <!-- Left Hinge Block -->
+    <g transform="translate(324, 474)">
+      <rect x="-18" y="-12" width="36" height="42" rx="7" fill="url(#clear-hinge-metal)" stroke="#cbd5e1" stroke-width="1.5"/>
+      <circle cx="0" cy="10" r="10" fill="#ffffff" stroke="#cbd5e1" stroke-width="1"/>
+      <circle cx="0" cy="10" r="6" fill="#e4e4e7"/>
+      <circle cx="0" cy="10" r="3.5" fill="url(#clear-amber-accent-glow)"/>
+    </g>
+
+    <!-- Right Hinge Block -->
+    <g transform="translate(700, 474)">
+      <rect x="-18" y="-12" width="36" height="42" rx="7" fill="url(#clear-hinge-metal)" stroke="#cbd5e1" stroke-width="1.5"/>
+      <circle cx="0" cy="10" r="10" fill="#ffffff" stroke="#cbd5e1" stroke-width="1"/>
+      <circle cx="0" cy="10" r="6" fill="#e4e4e7"/>
+      <circle cx="0" cy="10" r="3.5" fill="#ef4444"/>
+    </g>
+
+    <!-- D. LEFT SONY EGGO EARCUP -->
+    <g transform="translate(350, 622) rotate(9.5)" filter="url(#clear-cup-depth)">
+      <path d="M 35,-132 C 68,-132 102,-68 106,14 C 110,88 88,132 35,132 C 60,95 65,15 65,-10 C 65,-75 52,-110 35,-132 Z" fill="url(#clear-earpad-leather)" stroke="#94a3b8" stroke-width="2"/>
+      <path d="M 52,-90 C 72,-30 72,40 52,100" fill="none" stroke="#94a3b8" stroke-width="2" opacity="0.65"/>
+
+      <path d="M 0,-135 C 50,-135 84,-70 87,15 C 90,85 68,135 0,135 C -68,135 -90,85 -87,15 C -84,-70 -50,-135 0,-135 Z" fill="url(#clear-shell-grad-left)" stroke="#cbd5e1" stroke-width="3"/>
+      <path d="M 0,-135 C 50,-135 84,-70 87,15 C 90,85 68,135 0,135 C -68,135 -90,85 -87,15 C -84,-70 -50,-135 0,-135 Z" fill="none" stroke="#ffffff" stroke-width="1.8" opacity="0.65"/>
+
+      <path d="M 0,-108 C 38,-108 65,-55 68,12 C 70,68 53,108 0,108 C -53,108 -70,68 -68,12 C -65,-55 -38,-108 0,-108 Z" fill="url(#clear-shell-plate-left)" stroke="#cbd5e1" stroke-width="2"/>
+      <path d="M 0,-108 C 38,-108 65,-55 68,12 C 70,68 53,108 0,108 C -53,108 -70,68 -68,12 C -65,-55 -38,-108 0,-108 Z" fill="none" stroke="#ffffff" stroke-width="1.2" opacity="0.6"/>
+
+      <!-- Bass Micro-Vent -->
+      <g transform="translate(-15, -45)">
+        <rect x="-4" y="-18" width="8" height="36" rx="4" fill="#cbd5e1" stroke="#94a3b8" stroke-width="1"/>
+        <line x1="-1" y1="-12" x2="-1" y2="12" stroke="#ffffff" stroke-width="1.2" stroke-linecap="round"/>
+      </g>
+
+      <!-- Gimbal Joint -->
+      <circle cx="4" cy="8" r="24" fill="#ffffff" stroke="#94a3b8" stroke-width="1.5"/>
+      <circle cx="4" cy="8" r="18" fill="url(#clear-hinge-metal)"/>
+      <circle cx="4" cy="8" r="9" fill="#ffffff" stroke="#94a3b8" stroke-width="1"/>
+
+      <!-- Amber Strain-Relief Collar -->
+      <g transform="translate(-8, 134)">
+        <rect x="-8" y="0" width="16" height="10" rx="2.5" fill="url(#clear-amber-accent-glow)" stroke="#b45309" stroke-width="0.8"/>
+        <path d="M -6,10 L -4,24 L 4,24 L 6,10 Z" fill="#d4d4d8" stroke="#cbd5e1" stroke-width="0.8"/>
+        <path d="M 0,24 C 2,42 16,68 34,82" fill="none" stroke="#94a3b8" stroke-width="4.5" stroke-linecap="round"/>
+        <path d="M 0,24 C 2,42 16,68 34,82" fill="none" stroke="#ffffff" stroke-width="1.2" stroke-linecap="round" opacity="0.6"/>
+      </g>
+    </g>
+
+    <!-- E. RIGHT SONY EGGO EARCUP -->
+    <g transform="translate(674, 622) rotate(-9.5) scale(-1, 1)" filter="url(#clear-cup-depth)">
+      <path d="M 35,-132 C 68,-132 102,-68 106,14 C 110,88 88,132 35,132 C 60,95 65,15 65,-10 C 65,-75 52,-110 35,-132 Z" fill="url(#clear-earpad-leather)" stroke="#94a3b8" stroke-width="2"/>
+      <path d="M 52,-90 C 72,-30 72,40 52,100" fill="none" stroke="#94a3b8" stroke-width="2" opacity="0.65"/>
+
+      <path d="M 0,-135 C 50,-135 84,-70 87,15 C 90,85 68,135 0,135 C -68,135 -90,85 -87,15 C -84,-70 -50,-135 0,-135 Z" fill="url(#clear-shell-grad-right)" stroke="#cbd5e1" stroke-width="3"/>
+      <path d="M 0,-135 C 50,-135 84,-70 87,15 C 90,85 68,135 0,135 C -68,135 -90,85 -87,15 C -84,-70 -50,-135 0,-135 Z" fill="none" stroke="#ffffff" stroke-width="1.8" opacity="0.65"/>
+
+      <path d="M 0,-108 C 38,-108 65,-55 68,12 C 70,68 53,108 0,108 C -53,108 -70,68 -68,12 C -65,-55 -38,-108 0,-108 Z" fill="url(#clear-shell-plate-right)" stroke="#cbd5e1" stroke-width="2"/>
+      <path d="M 0,-108 C 38,-108 65,-55 68,12 C 70,68 53,108 0,108 C -53,108 -70,68 -68,12 C -65,-55 -38,-108 0,-108 Z" fill="none" stroke="#ffffff" stroke-width="1.2" opacity="0.6"/>
+
+      <!-- Bass Micro-Vent -->
+      <g transform="translate(-15, -45)">
+        <rect x="-4" y="-18" width="8" height="36" rx="4" fill="#cbd5e1" stroke="#94a3b8" stroke-width="1"/>
+        <line x1="-1" y1="-12" x2="-1" y2="12" stroke="#ffffff" stroke-width="1.2" stroke-linecap="round"/>
+      </g>
+
+      <!-- Gimbal Joint -->
+      <circle cx="4" cy="8" r="24" fill="#ffffff" stroke="#94a3b8" stroke-width="1.5"/>
+      <circle cx="4" cy="8" r="18" fill="url(#clear-hinge-metal)"/>
+      <circle cx="4" cy="8" r="9" fill="#ffffff" stroke="#94a3b8" stroke-width="1"/>
+    </g>
+  </g>
+  
+</svg>

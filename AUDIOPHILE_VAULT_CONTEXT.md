@@ -1,165 +1,156 @@
-# Audiophile Vault (AV) — System Architecture & Technical Handover
+# Audiophile Vault (AV) — System Architecture & Technical Specification
 
 **Project Name:** `audiophile-vault`  
 **Repository Working Directory:** `pepper-music`  
-**Application Type:** macOS Audiophile Desktop Music Manager, Lossless Tag Curator, and RTOS/Android SD Card Sync Engine  
-**Core Technologies:** React 18, Vite 5, Tailwind CSS 3 (Class-Based Dark Mode), Express 4, Node.js 20+
+**Bundle Identifier:** `com.audiophilevault.app` (`v2.0.0`, targeting macOS 14.0+ Sonoma / Sequoia)  
+**Application Type:** Native macOS Swift `WKWebView` Audiophile Music Manager, In-Process Lossless Tag/Artwork Curator, and RTOS/Android SD Card Sync Engine (~5.3 MB standalone `.app` bundle)  
+**Core Technologies:** Swift 5.9 (AppKit, WebKit, AVFoundation, ImageIO, CryptoKit, UniformTypeIdentifiers), React 18, Vite 5, Tailwind CSS 3 (Class-Based Dark Mode), TanStack Table 8
 
 ---
 
-## 1. Project Directory Tree & File Map
+## 1. Architecture Overview & Directory Map
+
+Audiophile Vault runs as a self-contained native macOS Swift application (`macos-swift/`) hosting the compiled React + Vite + Tailwind frontend (`client/dist/`) inside a custom `WKWebView` (`DraggableWebView`). There is no embedded browser runtime or external Node.js server required in production, and zero bundled external CLI tagging/transcoding binaries.
+
+### Native Swift Host & Bridge Architecture
+
+1. **Custom URL Scheme (`av://localhost/` via `VaultSchemeHandler`):**
+   - Serves compiled static frontend assets from `Contents/Resources/client/dist/`.
+   - Serves embedded album cover art directly from audio containers (`/api/artwork/:baseName`, `/covers/:filename`).
+   - Streams audio files (`/api/stream/:filename`) with full **HTTP `206 Partial Content`** byte-range support (`Range` / `Content-Range`) for instant lossless scrubbing and seeking.
+2. **Typed RPC & Event Bridge (`avBridge` via `WKScriptMessageHandlerWithReply`):**
+   - An injected document-start JavaScript shim intercepts `/api/*` `fetch()` calls and `EventSource` subscriptions (`/api/import/progress`, `/api/artwork/progress`, `/api/sync/progress`) and routes them over `window.webkit.messageHandlers.avBridge` to native Swift services (`LibraryService`, `ArtworkAndTagService`, `PlaylistService`, `VolumeAndSyncService`) via `SSEEventBus`.
+3. **Native macOS AppKit & System Integrations:**
+   - **Window Management (`MainWindowController.swift`):** Unified transparent titlebar (`fullSizeContentView`), `NSWindow` frame autosave (`AudiophileVaultMainWindow`), `isMovableByWindowBackground = true`, and synchronized `DraggableWebView` top-bar dragging (`performDrag`) & double-click zoom (`performZoom`) with interactive control exclusions (`[data-no-drag]`).
+   - **File Picker (`WebViewController.swift`):** `WKUIDelegate` implements `webView(_:runOpenPanelWith:initiatedByFrame:completionHandler:)` using `NSOpenPanel` sheet modals filtered to `[.jpeg, .png, .webP, .image]` for manual artwork uploads.
+   - **External Storage & Sync (`VolumeAndSyncService.swift`):** Enumerates `/Volumes/` using `URLResourceValues` (`volumeIsRemovableKey`, `volumeIsEjectableKey`, `volumeAvailableCapacityForImportantUsageKey`), protects system volumes, executes incremental differential syncs via `/usr/bin/rsync`, and safely ejects volumes via `NSWorkspace.shared.unmountAndEjectDevice(at:)`.
+   - **Image Normalization (`ArtworkAndTagService.swift`):** Uses `ImageIO` / `CoreGraphics` to normalize uploaded or fetched cover images into clean baseline JPEGs.
+
+### Repository Directory Tree
 
 ```
 pepper-music/
-├── .gitignore                          # Standard git ignore (deps, build, macOS, caches, vaults)
-├── AUDIOPHILE_VAULT_CONTEXT.md         # Technical architecture & handover document
-├── index.html                          # Single-page app root template (light/dark inline bootstrapper)
-├── package.json                        # Root package definition (audiophile-vault v1.0.0)
-├── package-lock.json                   # Deterministic lockfile
-├── postcss.config.js                   # PostCSS Tailwind and Autoprefixer integration
-├── tailwind.config.js                  # Tailwind configuration with darkMode: 'class'
-├── vite.config.js                      # Vite config with PostCSS HMR and API proxying
+├── AUDIOPHILE_VAULT_CONTEXT.md             # Canonical system architecture specification (Markdown)
+├── AUDIOPHILE_VAULT_CONTEXT.pdf            # Standalone PDF export of this specification
+├── index.html                              # Vite SPA entry template (inline dark/light bootstrapper)
+├── package.json                            # Frontend build scripts & React/Vite/Tailwind dependencies
+├── tailwind.config.js                      # Tailwind CSS config (darkMode: 'class')
+├── vite.config.js                          # Vite build configuration
 │
-├── client/                             # Primary frontend source
-│   ├── main.jsx                        # React root mount with ThemeProvider and App
-│   ├── App.jsx                         # Main dashboard layout, view state, and event coordinators
-│   ├── index.css                       # Global styles, scrollbar styling, and View Transitions CSS
-│   │
-│   ├── components/                     # Core React UI components
-│   │   ├── Header.jsx                  # Top metadata bar: branding, theme switch, stats, settings trigger
-│   │   ├── UnifiedControlBar.jsx       # Playback bar: Now Playing jump readout, player controls, SD actions
-│   │   ├── TrackTable.jsx              # Virtualized high-capacity track table with locked art column
-│   │   ├── Sidebar.jsx                 # Vault library and playlist management sidebar
-│   │   ├── ArtworkModal.jsx            # High-resolution artwork inspector and manual fetch/upload dialog
-│   │   ├── SettingsModal.jsx           # Global configuration modal (paths, playlist formats)
-│   │   ├── ContextMenu.jsx             # Contextual right-click action menu
-│   │   ├── LogViewer.jsx               # Collapsible live real-time log terminal
-│   │   ├── ControlsBar.jsx             # Forwarding alias
-│   │   ├── NowPlayingBar.jsx           # Forwarding alias
-│   │   ├── SyncControl.jsx             # Forwarding alias
-│   │   └── SyncPanel.jsx               # Forwarding alias
-│   │
-│   ├── context/                        # React Context providers
-│   │   ├── PlayerContext.jsx           # Audio playback engine, HTML5 audio, queue source tracking
-│   │   └── ThemeContext.jsx            # View Transitions-backed Light/Dark theme manager
-│   │
-│   ├── utils/                          # Frontend utility libraries
-│   │   └── sorting.js                  # Audiophile sort collation, A-Z normalization, compilation detection
-│   │
-│   └── src/                            # Forwarding mirrors ensuring backward-compatible submodule imports
-│       ├── App.jsx
-│       ├── index.css
-│       ├── main.jsx
-│       ├── components/                 # Forwarding re-exports to client/components/*
-│       ├── context/                    # Forwarding re-exports to client/context/*
-│       └── utils/                      # Forwarding re-exports to client/utils/*
+├── macos-swift/                            # Native macOS Swift Package (macOS 14.0+)
+│   ├── Package.swift                       # SwiftPM manifest linking AppKit, WebKit, AVFoundation, ImageIO, CryptoKit
+│   └── Sources/AudiophileVault/
+│       ├── main.swift                      # Entry point & CLI diagnostics (--self-test, --test-artwork-search, --test-drm-check)
+│       ├── AppDelegate.swift               # App lifecycle, native menu bar, Cmd+F search shortcut, single-window activation
+│       ├── MainWindowController.swift      # NSWindow setup, transparent titlebar, frame autosave, movability
+│       ├── WebViewController.swift         # DraggableWebView, avBridge RPC router, WKUIDelegate NSOpenPanel, JS shims
+│       ├── VaultSchemeHandler.swift        # av://localhost static asset, cover art, and HTTP 206 byte-range audio streamer
+│       ├── LibraryService.swift            # .vault_index.json atomic store, DRM-free ingestion, SHA-256 deduplication
+│       ├── ArtworkAndTagService.swift      # Zero-CLI container tagger/embedder & scored multi-provider artwork engine
+│       ├── PlaylistService.swift           # Universal CRLF .m3u playlist generator & CRUD manager
+│       └── VolumeAndSyncService.swift      # /Volumes/ inspector, /usr/bin/rsync sync, SNOWSKY folder export, NSWorkspace eject
 │
-├── server/                             # Express backend API & audiophile pipeline
-│   ├── index.js                        # Express server entry point, SSE dispatchers, and route registrations
-│   ├── db.js                           # Atomic state persistence, .vault_index.json lifecycle, path healing
-│   ├── config.js                       # Configuration defaults, validation, and volume resolution
-│   ├── playlists.js                    # Universal RTOS + Android compliant M3U/M3U8 export engine
-│   ├── artwork.js                      # Cover art discovery, MusicBrainz / iTunes fallback, image cache
-│   ├── embedder.js                     # Lossless tag and cover art binary embedder (FLAC, M4A, MP3)
-│   │
-│   └── services/                       # Background background service workers
-│       ├── metadata.js                 # music-metadata parser, DRM inspection, Full Archive Standard naming
-│       ├── scanner.js                  # Vault and source folder scanner, SHA-256 deduplication
-│       ├── sync.js                     # SD card delta sync engine and volume copy coordinator
-│       └── volume.js                   # External volume monitor, diskutil query, safety validator
+├── client/                                 # React 18 + Tailwind CSS frontend
+│   ├── main.jsx                            # React root mount
+│   ├── App.jsx                             # Root coordinator, SSE listeners, toast/console state, modal orchestration
+│   ├── index.css                           # Global scrollbar, View Transitions CSS, and native window drag exclusions
+│   ├── components/
+│   │   ├── Header.jsx                      # Bar 1: Top drag bar, theme switch, stats, SNOWSKY mode toggle, settings trigger
+│   │   ├── UnifiedControlBar.jsx           # Bar 2: Now Playing banner, transport controls, target SD selector, Ingest/Sync/Eject
+│   │   ├── TrackTable.jsx                  # Virtualized track table with locked 56px artwork column & resizable text columns
+│   │   ├── Sidebar.jsx                     # Library & playlist navigation, drag-and-drop reordering, CRUD
+│   │   ├── ArtworkModal.jsx                # Artwork inspector: Save Image, online Download Artwork, Browse Image, Remove Art
+│   │   ├── SettingsModal.jsx               # Source, Vault, and Target SD Card directory configuration
+│   │   ├── ContextMenu.jsx                 # Track context menu (Play, Add to Playlist, Inspect Artwork)
+│   │   └── LogViewer.jsx                   # Collapsible real-time Activity Console
+│   ├── context/
+│   │   ├── PlayerContext.jsx               # HTML5 Audio playback state & decoupled queueSource tracking
+│   │   └── ThemeContext.jsx                # GPU double-buffered Light/Dark switcher via View Transitions API
+│   └── utils/
+│       └── sorting.js                      # Smart release key collation, A-Z normalization, compilation & album sibling helpers
 │
-└── tests/                              # Node test runner suite (node --test)
-    ├── playlists.test.js               # Universal M3U/M3U8 compliance, CRLF, relative path tests
-    └── sorting.test.js                 # Smart release key collation and search matching tests
+├── scripts/
+│   ├── build-swift-app.sh                  # Production build script: Vite build -> Release Swift build -> .app packaging -> codesign
+│   ├── generate-icon.mjs / build-icns.sh   # App icon generation pipeline
+│   └── verify-release.sh                   # Release bundle verification helper
+│
+└── tests/
+    ├── playlists.test.js                   # Universal M3U CRLF & relative-path compliance tests
+    └── sorting.test.js                     # Smart release collation & search matching tests
 ```
 
 ---
 
-## 2. Key Components & Responsibilities
+## 2. Native Bridge & API Contract
 
-### Frontend Modules (`client/`)
+Frontend components communicate with the Swift host over standard `fetch('/api/...')` and `EventSource('/api/.../progress')` interfaces, transparently bridged to Swift via `avBridge` and `VaultSchemeHandler`:
 
-| Module / Component | Responsibilities |
-| :--- | :--- |
-| **`client/App.jsx`** | Root application controller. Manages navigation view (`activePlaylistId`, `searchQuery`, `filterMissingArt`), SSE event streams (`/api/import/progress`, `/api/sync/progress`, `/api/artwork/progress`), global keyboard shortcuts, and orchestrates the decoupled **Jump to Now Playing** view restoration and table row center-scroll. |
-| **`client/components/Header.jsx`** | Fixed top metadata bar (`h-14` height). Houses the retro spinning vinyl indicator during active operations, the tactile **Theme Toggle Switch** (`role="switch"`), the **Vault Tracks** count card, the **Library/Playlist Cover Art** stat card with instant missing-artwork filter toggle button and batch artwork fetch trigger, and the **Settings Modal** button. |
-| **`client/components/UnifiedControlBar.jsx`** | Action and playback control bar. Renders the interactive **Now Playing** track banner with origin readout (click to trigger Jump to Now Playing), standard audio controls (Previous, Play/Pause, Next), scrubber, volume slider, external **Target Volume** dropdown selector, and action buttons for **Ingest**, **Sync to SD**, and **Eject**. |
-| **`client/components/TrackTable.jsx`** | High-performance virtualized audio table. Renders thousands of tracks with zero hover lag. Features a strictly **locked 56px Cover Art column** (non-reorderable, non-resizable), format badges (`FLAC`, `ALAC`, `MP3`, sample/bit rates), smart album group sorting, active row highlight rings, and context menu dispatch. |
-| **`client/components/Sidebar.jsx`** | Left navigation panel. Handles navigation between the full Vault Library, Quick Filters (Missing Artwork), and User Playlists. Supports playlist creation, inline renaming, drag-and-drop reordering, duplication, and deletion. |
-| **`client/components/ArtworkModal.jsx`** | High-resolution artwork inspector dialog. Displays embedded art, facilitates live search across iTunes and Cover Art Archive / MusicBrainz, allows custom image drag-and-drop, and triggers backend image embedding. |
-| **`client/components/SettingsModal.jsx`** | Configuration dialog for Apple Music / Ingest Source Path, Audiophile Vault Storage Directory, Target SD Card Mount, and Universal Playlist Export formats (`m3u` vs `m3u8` and companion files). |
-| **`client/components/ContextMenu.jsx`** | Native-feeling right-click context menu offering instant playback, playlist addition/removal, artwork inspection, and Finder revelation. |
-| **`client/components/LogViewer.jsx`** | Collapsible real-time diagnostic console situated at the bottom of the window, displaying timestamped ingest, sync, and network events with auto-scroll and one-click log clearing. |
-| **`client/context/PlayerContext.jsx`** | Global audio state provider. Enforces HTML5 audio playback, maintains the current playing track, play/pause state, volume/mute levels, and tracks `queueSource` (`{ type: 'vault' | 'playlist' | 'search' | 'filter', id, query }`) to allow decoupled browsing without losing queue context. |
-| **`client/context/ThemeContext.jsx`** | Class-based Light/Dark theme coordinator. Implements GPU double-buffering via `document.startViewTransition`, wraps state updates in `flushSync`, manages the `.theme-switching` transition suppression lifecycle, and persists preferences to `localStorage['av_theme']`. |
-| **`client/utils/sorting.js`** | Deterministic audiophile collation engine: `getSmartReleaseSortKey` strips leading articles ("The "), normalizes accented characters, unifies multi-disc sets, formats disc/track numbers (`D1 • T04`), and detects compilation markers (`[OST]`, `[VA]`). |
-
-### Backend API & Pipeline (`server/`)
-
-| File / Service | Responsibilities |
-| :--- | :--- |
-| **`server/index.js`** | Express application server running on port `3001` (proxied by Vite in dev). Exposes REST endpoints for configuration, volume management, playlist CRUD, audio streaming (`/api/stream/:filename`), artwork serving, and Server-Sent Events (SSE) for background tasks. |
-| **`server/db.js`** | Thread-safe, atomic database engine for `.vault_index.json`. Uses temporary write files (`.tmp`) and atomic renames to prevent index corruption. Provides path expansion (`expandTilde`) to prevent cwd corruption. |
-| **`server/config.js`** | Validates and stores persistent settings (`sourcePath`, `vaultPath`, `sdCardPath`, `playlistFormat`, `emitCompanionM3u8`). Enforces volume path safety. |
-| **`server/playlists.js`** | Strict, universal playlist export generator complying with embedded RTOS requirements (Echo Nano) and Android audiophile players (Poweramp, HiBy). |
-| **`server/artwork.js`** | Embedded artwork extractor, thumbnail cache manager (`~/.audiophile-vault/artwork/`), and external metadata fetcher (Cover Art Archive, iTunes Search API). |
-| **`server/embedder.js`** | Native tag embedder writing cover art buffers directly into audio file headers (ID3v2 for MP3/AIFF, Vorbis comments for FLAC, and MP4 atoms for M4A/ALAC). |
-| **`server/services/metadata.js`** | Audio header inspector using `music-metadata`. Extracts track titles, artists, album artists, compilations, disc numbers, lossless flags, sample rates, and bit depths. Formats the **Full Archive Standard** filename. |
-| **`server/services/scanner.js`** | Multi-threaded filesystem scanner. Computes SHA-256 checksums, identifies new vs existing tracks, and emits live progress updates. |
-| **`server/services/sync.js`** | Volume synchronization worker. Compares Vault tracks and playlists against the destination SD card, copies new files, exports M3U playlists, and cleans orphan tracks. |
-| **`server/services/volume.js`** | Safety validator for external media. Queries mounted devices under `/Volumes/`, verifies removable flags, and blocks destructive writes to internal macOS system volumes (`/`, `/System`). |
-
----
-
-## 3. Backend REST API Endpoints
-
-| Method | Endpoint | Description |
+| Method | Endpoint | Native Swift Handler |
 | :--- | :--- | :--- |
-| `GET` | `/api/config` | Retrieves active paths, playlist configuration, and vault statistics. |
-| `POST` | `/api/config` | Updates vault directories, target SD path, and playlist export settings. |
-| `POST` | `/api/settings/target` | Validates and updates active SD card sync target. |
-| `GET` | `/api/volumes` | Lists mounted removable external storage volumes in `/Volumes/`. |
-| `GET` | `/api/tracks` | Returns complete list of indexed tracks in the Audiophile Vault. |
-| `GET` | `/api/stream/:filename` | Streams audio file with HTTP 206 range-request support for seeking. |
-| `GET` | `/covers/:filename` | Serves cached square album art thumbnail. |
-| `GET` | `/api/playlists` | Retrieves all saved user playlists. |
-| `POST` | `/api/playlists` | Creates a new empty playlist. |
-| `PUT` | `/api/playlists/:id` | Renames a playlist or updates metadata. |
-| `POST` | `/api/playlists/:id/duplicate` | Clones an existing playlist. |
-| `DELETE` | `/api/playlists/:id` | Deletes a playlist. |
-| `POST` | `/api/playlists/:id/tracks` | Appends tracks to a playlist. |
-| `DELETE` | `/api/playlists/:id/tracks/:trackKey` | Removes a specific track from a playlist. |
-| `PUT` | `/api/playlists/:id/reorder` | Updates track ordering in a playlist. |
-| `GET` | `/api/artwork/progress` | SSE stream for real-time artwork backfill progress. |
-| `POST` | `/api/artwork/backfill` | Launches background batch artwork search and embedder. |
-| `POST` | `/api/artwork/stop` | Halts active background artwork backfill. |
-| `GET` | `/api/artwork/:baseName` | Fetches metadata and cover art lookup candidates. |
-| `POST` | `/api/artwork/:baseName` | Downloads and embeds selected cover image into audio file. |
-| `DELETE` | `/api/artwork/:baseName` | Removes embedded artwork from audio file and clears cache. |
-| `GET` | `/api/import/progress` | SSE stream for track ingest / scan progress. |
-| `POST` | `/api/import` | Triggers import scan from source path into Audiophile Vault. |
-| `GET` | `/api/sync/progress` | SSE stream for SD card file transfer progress. |
-| `POST` | `/api/sync` | Starts differential synchronization to external SD card volume. |
-| `POST` | `/api/eject` | Unmounts and ejects external SD card volume safely via `diskutil`. |
+| `GET` / `POST` | `/api/config` | Reads or updates `VaultConfig` (`sourcePath`, `vaultPath`, `sdCardPath`, `exportPlaylistFolders`, `snowskyModeUserOverride`) and vault stats. |
+| `GET` | `/api/volumes` | Lists mounted removable/ejectable external volumes in `/Volumes/` with free space via `URLResourceValues`. |
+| `GET` | `/api/tracks` | Returns all indexed tracks from `.vault_index.json` sorted deterministically. |
+| `GET` | `/api/stream/:filename` | Streams audio via `VaultSchemeHandler` with HTTP `206 Partial Content` byte-range seeking. |
+| `GET` | `/api/artwork/:baseName` | Extracts and serves embedded artwork directly from the audio container (or `/covers/:filename`). |
+| `GET` | `/api/artwork/:baseName/download` | Triggers native `NSSavePanel` export of the embedded artwork. |
+| `POST` / `DELETE` | `/api/artwork/:baseName` | Embeds or strips cover art in-process across a single track, disc, or album group (`saveManualArtwork` / `deleteManualArtwork`). |
+| `POST` | `/api/artwork/backfill` | Runs scored online artwork lookup for library, playlist, or explicit `trackKeys`. |
+| `POST` | `/api/artwork/stop` | Cancels active artwork backfill. |
+| `GET` / `POST` / `PUT` / `DELETE` | `/api/playlists*` | Full playlist CRUD, duplication, track add/remove, and drag-and-drop track reordering; syncs `.m3u` files on disk. |
+| `POST` | `/api/import` | Starts recursive DRM-free ingestion pipeline (`LibraryService.runIngestionPipeline`). |
+| `POST` | `/api/sync` | Starts incremental `/usr/bin/rsync` sync + `.m3u` export (+ SNOWSKY folder export when enabled). |
+| `POST` | `/api/eject` | Safely unmounts and ejects the target volume via `NSWorkspace.shared.unmountAndEjectDevice(at:)`. |
+| `GET` (SSE) | `/api/import/progress`, `/api/artwork/progress`, `/api/sync/progress` | Real-time Activity Console event streams pushed via `SSEEventBus`. |
 
 ---
 
-## 4. `.vault_index.json` Database Schema
+## 3. Zero-CLI Tagging, Artwork Engine & DRM Enforcement
 
-The database is stored on disk at:  
-**Primary Path:** `~/Music/AudiophileVault/.vault_index.json`  
-**Fallback / App Data:** `~/.audiophile-vault/.vault_index.json`
+### In-Process Container Tagging & Artwork Embedding
+All metadata parsing, artwork extraction, artwork embedding, and artwork stripping run natively in Swift inside `ArtworkAndTagService.swift` with zero external binary dependencies:
+- **MP3 / AIFF:** Pure-Swift ID3v2 (`APIC` frame) reader, writer, and stripper.
+- **FLAC:** Pure-Swift `METADATA_BLOCK_PICTURE` & `VORBIS_COMMENT` / `STREAMINFO` parser, writer, and stripper.
+- **M4A / ALAC / AAC:** Pure-Swift ISO Base Media File Format (`moov`/`udta`/`meta`/`ilst`/`covr`) atom transformer that recalculates `stco` / `co64` chunk offsets so audio playback and seeking remain lossless and uncorrupted.
+- **Image Normalization:** `ImageIO` (`CGImageSource` / `CGImageDestination`) validates and converts uploaded/downloaded images to clean baseline JPEG (`max 1200px`) before embedding.
 
-### Top-Level Document Structure
+### Scored Multi-Provider Artwork Lookup Engine
+`ArtworkAndTagService.swift` implements a strict three-tier waterfall (**iTunes Search API -> Deezer Public API -> MusicBrainz / Cover Art Archive**) with mandatory artist verification:
+
+1. **Artist-Anchored Query Hierarchy (`limit=10` per provider):**
+   - **Standard Albums:** Uses `effectiveArtist = albumArtist ?? artist` and queries `"{cleanedArtist} {cleanedAlbum}"` (iTunes), `artist:"{artist}" album:"{album}"` / `"{artist} {album}"` (Deezer), and `release:"{album}" AND artist:"{artist}"` (MusicBrainz). Unanchored album-only or artist-only fallbacks are strictly forbidden for standard albums.
+   - **Compilations & Soundtracks:** Detected via `compilation == true` or `albumArtist` matching `"Various Artists"`, `"Soundtrack"`, `"Original Soundtrack"`, or `"OST"`. Queries by `"{cleanedAlbum}"` (or `"{cleanedAlbum} soundtrack"`) and verifies against `"Various Artists"` / soundtrack credits or contributing track artists.
+2. **Canonical Normalization & Similarity Scoring (`scoreCandidate`):**
+   - `normalizeForComparison` folds case and diacritics, converts `&` and `+` to `and`, strips punctuation, and removes leading `"the "`.
+   - **Mandatory Artist Match Gate (`>= 0.80`):** Every candidate's normalized artist must match the expected artist (exact, whole-phrase containment, or `max(levenshteinSimilarity, tokenSimilarity) >= 0.80`). Any mismatched artist is rejected immediately, even on a 100% album title match.
+   - **Tribute / Karaoke / Cover Filtering:** Hard-rejects `"karaoke"`, `"tribute to"`, `"in the style of"`, `"made famous by"`, and `"ringtone"`, and penalizes `"tribute"`, `"cover"`, and `"instrumental"` (`-0.45`) unless present in the source tags.
+   - **Confidence Threshold (`>= 0.75`):** Selects the highest-scoring candidate (`artistScore * 0.45 + albumScore * 0.55 - penalty`) with `combinedScore >= 0.75`; otherwise returns `NOT_FOUND`.
+3. **Album-Level Cache & Invalidation:**
+   - Results are cached in `albumArtCache` by canonical `(normalizeForComparison(effectiveArtist), normalizeForComparison(cleanedAlbum))`. Removing artwork via `deleteManualArtwork` immediately invalidates the album's cache entry so re-running **Download Artwork** performs a fresh online lookup.
+
+### Strict DRM-Free Ingestion Gate
+`LibraryService.swift` enforces a multi-layer DRM-free gate before any file is copied into `~/Music/AudiophileVault/` or indexed in `.vault_index.json`:
+1. **Strict Extension Allowlist:** Only `.mp3`, `.m4a`, `.flac`, `.alac`, `.wav`, `.aiff`, and `.aac` (case-insensitive) are accepted.
+2. **Explicit DRM Format Exclusion:** `.m4p`, `.wma`, `.aa`, and `.aax` are immediately rejected and logged as `[DRM SKIP] {filename}`.
+3. **Container & `AVFoundation` Protection Checks:**
+   - `hasMp4ProtectionAtoms(filePath:)` scans the `moov` box of `.m4a`/`.alac`/`.aac` files for `drms` or `sinf` FairPlay atoms.
+   - `AVURLAsset` verifies `hasProtectedContent == false`, `isPlayable == true`, and non-empty `loadTracks(withMediaType: .audio)`.
+   - Any protected or unplayable stream is logged as `[DRM SKIP] {filename}` and excluded from the vault and summary (`skippedDrm`).
+
+---
+
+## 4. `.vault_index.json` Schema, Filename Standard & Collation
+
+The canonical index is stored atomically (write `.tmp` + rename) at `~/Music/AudiophileVault/.vault_index.json` (or `~/.audiophile-vault/.vault_index.json` fallback):
+
 ```json
 {
-  "updatedAt": "2026-11-12T03:44:38.000Z",
+  "updatedAt": "2026-11-15T19:35:00.000Z",
   "config": {
-    "sourcePath": "/Users/username/Music/Music/Media.localized/Music/",
-    "vaultPath": "/Users/username/Music/AudiophileVault/",
-    "sdCardPath": "/Volumes/WALKMAN/",
-    "playlistFormat": "m3u",
-    "emitCompanionM3u8": false
+    "sourcePath": "~/Music/Music/Media.localized/Music/",
+    "vaultPath": "~/Music/AudiophileVault/",
+    "sdCardPath": "/Volumes/SNOWSKY/",
+    "exportPlaylistFolders": true,
+    "snowskyModeUserOverride": false
   },
   "tracks": {
     "queen|greatest hits|101|bohemian rhapsody": {
@@ -206,109 +197,65 @@ The database is stored on disk at:
 }
 ```
 
-### Deterministic Deduplication Key Rule
-Tracks are mapped by a canonical compound key generated via `buildNormalizedKey`:
-$$\text{key} = \text{clean}(Artist) \mathbin{\Vert} \text{"|"} \mathbin{\Vert} \text{clean}(Album) \mathbin{\Vert} \text{"|"} \mathbin{\Vert} \text{pad3}(DiscTrack) \mathbin{\Vert} \text{"|"} \mathbin{\Vert} \text{clean}(Title)$$
-- All values are converted to lowercase, smart curly apostrophes `[’]` normalized to straight `'`, and consecutive whitespace collapsed.
-- `DiscTrack` is 3 digits minimum (e.g. Disc 1 Track 1 $\to$ `"101"`, Disc 2 Track 12 $\to$ `"212"`).
-
-### Full Archive Standard Filename
-Every track in the vault follows the strict naming standard:
-`{Sanitized Artist} - {Sanitized Album} - {DiscTrack} - {Sanitized Title}.{ext}`
-Illegal filesystem characters (`/ \ : * ? " < > |`) and control characters are sanitized into clean hyphens.
+- **Full Archive Standard Filename:** `{Sanitized Artist} - {Sanitized Album} - {DiscTrack} - {Sanitized Title}.{ext}` (sanitizing `/ \ : * ? " < > |` and control characters).
+- **Compound Key (`buildNormalizedKey`):** `clean(Artist)|clean(Album)|pad3(DiscTrack)|clean(Title)` in lowercase with smart quotes normalized and whitespace collapsed (`Disc 1, Track 1` -> `101`).
+- **Smart Release Collation (`getSmartReleaseSortKey` in `client/utils/sorting.js`):** Strips leading `"The "`, normalizes diacritics, groups multi-disc releases under a unified album sort key, formats disc/track indicators (`D1 • T04`), and detects compilations (`[OST]`, `[VA]`).
 
 ---
 
-## 5. Universal Playlist Export Specifications
+## 5. Universal `.m3u` Playlist Export & SNOWSKY Mode
 
-Playlists are generated in `server/playlists.js` during manual export or when syncing to an external SD card.
-
-### Universal Compliance Standards (Echo Nano RTOS & Android)
-
-1. **Line Endings:**
-   - Every single line must terminate with **Windows CRLF (`\r\n`)**.
-   - Unix `\n` is forbidden; embedded RTOS parsers (e.g., Echo Nano) fail to trim `\r` if mixed or Unix-only, appending an invisible `\r` character to the file path and breaking playback.
-2. **Relative Path Resolution (`resolveRelativeTrackPath`):**
-   - Track paths must be calculated relative to the destination directory where the playlist file resides.
-   - **Forward Slashes Only:** Path separators must always be forward slashes (`/`), never backslashes (`\`).
-   - **Zero Leading Slashes:** The path must never begin with `/` or `\` (e.g., `Queen - Greatest Hits - 101 - Bohemian Rhapsody.m4a` or `../Music/...`).
-   - **No Leading `./`:** Embedded RTOS players treat leading `./` as a literal folder named `.`. It must be stripped.
-3. **Encoding:**
-   - Standard **UTF-8 without Byte Order Mark (BOM)**. BOM sequences cause RTOS playlist parsers to fail on line 1.
-4. **File Structure:**
+### Standardized `.m3u` Format (`PlaylistService.swift`)
+All playlist exports are standardized strictly on `.m3u` (legacy `.m3u8` toggles removed) for maximum compatibility across Android players (HiBy, Poweramp) and embedded RTOS DAPs (Snowsky Echo Nano):
+1. **Encoding:** UTF-8 **without** Byte Order Mark (BOM).
+2. **Line Endings:** Strict Windows **CRLF (`\r\n`)** on every line.
+3. **Relative Paths:** Forward slashes (`/`) only, with **zero leading `/` or `./`**:
    ```plaintext
    #EXTM3U\r\n
-   #EXTINF:-1,Artist Name - Track Title\r\n
-   Relative/Path/To/Track.flac\r\n
+   #EXTINF:-1,Queen - Bohemian Rhapsody\r\n
+   Queen - Greatest Hits - 101 - Bohemian Rhapsody.m4a\r\n
    ```
-5. **Dual Export Mode:**
-   - Always writes the primary `.m3u` file for broad player compatibility.
-   - When `emitCompanionM3u8: true` or `playlistFormat: 'm3u8'` is enabled, writes an identical companion `.m3u8` playlist side-by-side.
+
+### SNOWSKY Mode (`exportPlaylistFolders`)
+- **Auto-Detection:** Selecting a volume whose name contains `SNOWSKY` automatically enables `exportPlaylistFolders = true` (with manual override respected via `snowskyModeUserOverride` and the `Snowflake` toggle card in `Header.jsx`).
+- **Folder Export (`syncPlaylistFolders`):** During SD card sync, each playlist is exported as a root-level folder on the SD card containing physical copies of its tracks prefixed with their 1-based playback index (`001 - {filename}`) so RTOS folder-based players play playlists in exact sequential order. When disabled, managed playlist folders are cleanly removed from the SD card.
 
 ---
 
 ## 6. UI/UX Conventions & Design Standards
 
-### 1. Two-Bar Header System
-The application layout reserves the top of the interface for two distinct, fixed toolbars:
-- **Bar 1 — Top Metadata Toolbar (`Header.jsx`):**
-  - Left: Application branding ("Audiophile Vault") accompanied by a spinning vinyl record indicator active during imports, syncs, or artwork operations.
-  - Right: Tactile Light/Dark Mode toggle switch, Vault Tracks count badge, Library Cover Art stat card (with missing art filter button and backfill trigger), and Settings button. All stat cards share a standardized height of `h-14` (56px).
-- **Bar 2 — Action & Playback Bar (`UnifiedControlBar.jsx`):**
-  - Left: Interactive **Now Playing** readout with cover thumbnail, artist, title, audio format badge (`FLAC`, `96kHz 24bit`), and origin queue readout (`Vault`, `Playlist: Rock`, `Search`).
-  - Center: Audio controls (Previous, Play/Pause, Next), interactive seek bar with elapsed and remaining timestamps, and volume slider.
-  - Right: SD Card target volume picker dropdown, Ingest button, Sync to SD button, and Volume Eject button.
-
-### 2. Locked Cover Art Column (`TrackTable.jsx`)
-- The first column in the track table is permanently locked at `56px` (`w-[56px] min-w-[56px] max-w-[56px] shrink-0`).
-- It is non-draggable, non-reorderable, and non-resizable.
-- Displays a `40x40` pixel rounded thumbnail with high-contrast fallback icon (`Disc`). Hovering displays an inspect eye overlay that opens `ArtworkModal.jsx`.
-
-### 3. Decoupled "Jump to Now Playing" Queue Architecture
-- The playback queue is managed in `PlayerContext.jsx` independently of the currently viewed track list.
-- When playback starts, the context records the origin:
-  ```javascript
-  queueSource = {
-    type: 'vault' | 'playlist' | 'search' | 'filter',
-    id: activePlaylistId,
-    query: searchQuery
-  }
-  ```
-- Users can freely browse other playlists, filter for missing artwork, or run search queries without interrupting the active queue.
-- Clicking the origin indicator under the Play button in `UnifiedControlBar.jsx` triggers `jumpToNowPlaying()` in `client/App.jsx`:
-  1. Restores the originating playlist view or search term.
-  2. Scrolls the virtualized `TrackTable.jsx` to center on the active track (`scrollToTrackKey`).
-  3. Triggers an amber glow pulse and border highlight (`animate-pulse bg-amber-500/25 border-l-4 border-amber-400`).
-
-### 4. GPU Double-Buffered Light/Dark Theme Switching
-- Theme state is managed via `ThemeContext.jsx` with class-based Tailwind (`<html class="dark">`).
-- **View Transitions API:** The DOM update is wrapped inside `document.startViewTransition()` with React 18 DOM flushing:
-  ```javascript
-  document.documentElement.classList.add('theme-switching');
-  const transition = document.startViewTransition(() => {
-    applyTheme(nextTheme);
-    flushSync(() => setThemeState(nextTheme));
-  });
-  transition.finished.finally(() => {
-    document.documentElement.classList.remove('theme-switching');
-  });
-  ```
-- **Performance Protection:** `.theme-switching *, .theme-switching *::before, .theme-switching *::after { transition: none !important; }` prevents per-element CSS style recalculation lag across thousands of table rows.
-- **Cross-Fade Animation:** Configured in `client/index.css` with a smooth 180ms opacity cross-fade:
-  ```css
-  ::view-transition-old(root),
-  ::view-transition-new(root) {
-    animation-duration: 180ms;
-    animation-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
-    mix-blend-mode: normal;
-  }
-  ```
-- **Table Row Optimization:** Individual `<tr>` rows in `TrackTable.jsx` omit CSS `transition-colors`, keeping hover states crisp and scrolling fluid at 60fps across large libraries.
+1. **Two-Bar Header System:**
+   - **Bar 1 (`Header.jsx`):** `pl-20` traffic-light clearance (non-fullscreen), native window drag region (`data-window-drag="true"`), and uniform `h-14` (`56px`) control/stat cards with `[data-no-drag="true"]`: Theme Switch, Vault Tracks, Library/Playlist Cover Art (with missing-art filter and batch fetch), Vault Size, Target SD, SNOWSKY Mode toggle, and Settings trigger.
+   - **Bar 2 (`UnifiedControlBar.jsx`):** Interactive **Now Playing** readout (click to trigger **Jump to Now Playing**), audio transport controls, seek scrubber, volume slider, Target SD volume selector, **Ingest**, **Sync to SD**, and **Eject**.
+2. **Track Table (`TrackTable.jsx`):**
+   - Virtualized TanStack Table with a **permanently locked `56px` Cover Art column** (`w-[56px] min-w-[56px] max-w-[56px] shrink-0`, non-reorderable, non-resizable) and drag-resizable text columns.
+3. **Artwork Modal (`ArtworkModal.jsx`):**
+   - Wide `max-w-2xl` dialog displaying high-resolution embedded art, drag-and-drop viewport, scope toggle (*Apply to all tracks in album*), and a single-row footer with **Remove Art**, **Save Image**, online **Download Artwork**, and **Browse Image… / Replace / Upload Art…** (backed by native `NSOpenPanel`).
+4. **Decoupled "Jump to Now Playing" (`PlayerContext.jsx` & `App.jsx`):**
+   - Tracks `queueSource` (`{ type: 'vault' | 'playlist' | 'search' | 'filter', id, query }`) independently of active browsing; clicking Now Playing restores the originating view and scrolls to center the playing track.
+5. **GPU Double-Buffered Theme Switching (`ThemeContext.jsx` & `client/index.css`):**
+   - Uses `document.startViewTransition()` + React `flushSync` with `.theme-switching` transition suppression and a 180ms root cross-fade.
 
 ---
 
-## 7. Verification & Quality Assurance
+## 7. Build, Packaging & Verification
 
-- **Unit Tests:** Run via `node --test tests/*.test.js` (9/9 tests verifying relative path resolution, universal CRLF M3U formatting, UTF-8 non-BOM encoding, smart release key collation, and search collation).
-- **Production Bundle:** Built via `npm run build` using Vite 5. Output bundled to `dist/`.
-- **Runtime Dev Server:** Running concurrently via `npm run dev` (`node --watch server/index.js` and `vite` on port 5173).
+### Production Build (`scripts/build-swift-app.sh`)
+```bash
+bash scripts/build-swift-app.sh
+```
+1. Compiles the React + Tailwind frontend (`client/dist/`).
+2. Compiles the Release Swift executable (`swift build -c release` in `macos-swift/`).
+3. Packages `dist/Audiophile Vault.app` (~5.3 MB) with `Info.plist`, app icon (`icon.icns` / `Assets.car`), and embedded `client/dist/`.
+4. Ad-hoc signs and verifies the bundle (`codesign --force --deep --sign -` & `codesign --verify --deep --strict`).
+
+### Automated Diagnostics & Tests
+- **Native Swift Self-Test:**
+  `"/Applications/Audiophile Vault.app/Contents/MacOS/Audiophile Vault" --self-test`  
+  Verifies `.vault_index.json` loading, playlist loading, `client/dist/index.html` resolution, and embedded artwork extraction.
+- **Artwork Lookup Dry-Run:**
+  `"/Applications/Audiophile Vault.app/Contents/MacOS/Audiophile Vault" --test-artwork-search`
+- **DRM Enforcement Check:**
+  `"/Applications/Audiophile Vault.app/Contents/MacOS/Audiophile Vault" --test-drm-check`
+- **Frontend/Spec Unit Tests:**
+  `node --test tests/*.test.js`

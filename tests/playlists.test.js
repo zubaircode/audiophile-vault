@@ -114,7 +114,7 @@ test('buildM3u8Content: universal CRLF line endings, structure, and UTF-8 encodi
   }
 });
 
-test('writePlaylistM3u8: writes primary .m3u and optional companion .m3u8', () => {
+test('writePlaylistM3u8: writes universal .m3u and cleans up legacy .m3u8 files', () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'av-m3u-test-'));
 
   const originalGetTrackByKey = db.getTrackByKey;
@@ -130,18 +130,20 @@ test('writePlaylistM3u8: writes primary .m3u and optional companion .m3u8', () =
       trackKeys: ['k1'],
     };
 
-    // Case 1: Primary .m3u only (companion disabled)
-    writePlaylistM3u8(playlist, {
-      targetPlaylistDir: tmpDir,
-      audioDir: tmpDir,
-      emitCompanionM3u8: false,
-    });
-
     const m3uFile = path.join(tmpDir, 'Favorites.m3u');
     const m3u8File = path.join(tmpDir, 'Favorites.m3u8');
 
+    // Simulate a legacy .m3u8 file present on disk
+    fs.writeFileSync(m3u8File, '#EXTM3U\r\n', 'utf8');
+    assert.ok(fs.existsSync(m3u8File), 'Legacy .m3u8 exists prior to write');
+
+    writePlaylistM3u8(playlist, {
+      targetPlaylistDir: tmpDir,
+      audioDir: tmpDir,
+    });
+
     assert.ok(fs.existsSync(m3uFile), 'Primary .m3u file must exist');
-    assert.ok(!fs.existsSync(m3u8File), 'Companion .m3u8 file must not exist when disabled');
+    assert.ok(!fs.existsSync(m3u8File), 'Legacy .m3u8 file must be cleaned up');
 
     const m3uBytes = fs.readFileSync(m3uFile);
     // Check no BOM
@@ -151,29 +153,6 @@ test('writePlaylistM3u8: writes primary .m3u and optional companion .m3u8', () =
     assert.ok(text.includes('\r\n'));
     assert.ok(!text.replace(/\r\n/g, '').includes('\n'));
     assert.ok(!text.replace(/\r\n/g, '').includes('\r'));
-
-    // Case 2: Companion .m3u8 enabled
-    writePlaylistM3u8(playlist, {
-      targetPlaylistDir: tmpDir,
-      audioDir: tmpDir,
-      emitCompanionM3u8: true,
-    });
-
-    assert.ok(fs.existsSync(m3uFile), 'Primary .m3u file must exist');
-    assert.ok(fs.existsSync(m3u8File), 'Companion .m3u8 file must exist when enabled');
-
-    const m3u8Text = fs.readFileSync(m3u8File, 'utf8');
-    assert.equal(m3u8Text, text, 'Companion .m3u8 must have identical universal content');
-
-    // Case 3: Re-writing with companion disabled removes stale .m3u8
-    writePlaylistM3u8(playlist, {
-      targetPlaylistDir: tmpDir,
-      audioDir: tmpDir,
-      emitCompanionM3u8: false,
-    });
-
-    assert.ok(fs.existsSync(m3uFile), 'Primary .m3u file remains');
-    assert.ok(!fs.existsSync(m3u8File), 'Stale companion .m3u8 file must be cleaned up');
   } finally {
     db.getTrackByKey = originalGetTrackByKey;
     fs.rmSync(tmpDir, { recursive: true, force: true });

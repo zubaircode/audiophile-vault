@@ -106,3 +106,21 @@ html.dark ::-webkit-scrollbar-thumb:hover {
   transition: none !important;
 }
 
+/* Native macOS window drag region & interactive control exclusions */
+[data-window-drag="true"] {
+  -webkit-app-region: drag;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+[data-no-drag="true"],
+header button,
+header input,
+header a,
+header select,
+header textarea,
+header [role="switch"] {
+  -webkit-app-region: no-drag;
+}
+
+

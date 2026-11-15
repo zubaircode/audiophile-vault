@@ -6,7 +6,17 @@ node_modules/
 # Build outputs
 dist/
 dist-ssr/
-build/
+build/*
+!build/entitlements.mac.plist
+!build/entitlements.mac.inherit.plist
+!build/icon.svg
+!build/icon-*.svg
+!build/icon-1024.png
+!build/icon-*-1024.png
+!build/icon.icns
+!build/Assets.car
+release/
+client/dist/
 *.local
 
 # Environment & secrets
@@ -43,3 +53,14 @@ pnpm-debug.log*
 # Local Audiophile Vault index / temp files (if stored inside project)
 .vault_index.json
 *.tmp
+
+# Bundled CLI binaries
+resources/bin/*
+!resources/bin/.gitkeep
+
+# Swift Package Manager build outputs
+macos-swift/.build/
+.build/
+.swiftpm/
+
+

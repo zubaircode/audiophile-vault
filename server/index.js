@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import fs, { promises as fsp } from 'node:fs';
 import express from 'express';
 import cors from 'cors';
@@ -6,7 +7,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { db, expandTilde, getCompanionJpgFilename } from './db.js';
 import { listMountedVolumes, ejectVolume, isSafeExternalVolume } from './services/volume.js';
-import { resolveTargetMusicDir } from './config.js';
+import { resolveTargetMusicDir, getHardenedEnv } from './config.js';
 import {
   ingestEmitter,
   runIngestionPipeline,
@@ -17,6 +18,7 @@ import {
   syncEmitter,
   runRsyncToSdCard,
   getSyncState,
+  killActiveRsync,
 } from './services/sync.js';
 import {
   listPlaylists,
@@ -40,14 +42,38 @@ import {
   saveManualArtwork,
   deleteManualArtwork,
 } from './artwork.js';
+import { embedderEmitter } from './embedder.js';
+
+// Bridge embedder warnings to the Activity Console artwork/sync log stream
+embedderEmitter.on('warning', (warningMsg) => {
+  artworkEmitter.emit('progress', {
+    timestamp: new Date().toISOString(),
+    type: 'SKIPPED',
+    message: warningMsg,
+  });
+});
 
 const execFileAsync = promisify(execFile);
 
 const app = express();
-const PORT = process.env.PORT || 3001;
 
 app.use(cors());
 app.use(express.json({ limit: '25mb' }));
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Serve packaged/built Vite client static assets when available
+const clientDistCandidates = [
+  path.resolve(__dirname, '../client/dist'),
+  path.resolve(__dirname, '../../client/dist'),
+  path.join(process.resourcesPath || '', 'client/dist'),
+  path.join(process.resourcesPath || '', 'app.asar/client/dist'),
+];
+const clientDistDir = clientDistCandidates.find((d) => fs.existsSync(d));
+if (clientDistDir) {
+  app.use(express.static(clientDistDir));
+}
 
 // Initialize database registry & synchronize .m3u files on startup
 db.init();
@@ -117,7 +143,7 @@ app.get('/api/config', async (_req, res) => {
 
 /**
  * POST /api/config
- * Updates configurable directory paths (`sourcePath`, `vaultPath`, `sdCardPath`) and `playlistFormat`.
+ * Updates configurable directory paths (`sourcePath`, `vaultPath`, `sdCardPath`) and `exportPlaylistFolders`.
  */
 app.post('/api/config', async (req, res) => {
   try {
@@ -126,15 +152,13 @@ app.post('/api/config', async (req, res) => {
       vaultPath,
       sdCardPath,
       targetPath,
-      playlistFormat,
-      emitCompanionM3u8,
+      exportPlaylistFolders,
     } = req.body || {};
     db.updateConfig({
       sourcePath,
       vaultPath,
       sdCardPath: targetPath !== undefined ? targetPath : sdCardPath,
-      playlistFormat,
-      emitCompanionM3u8,
+      exportPlaylistFolders,
     });
     await db.syncVaultOnDisk({ force: true });
     syncAllPlaylistsM3u8();
@@ -185,7 +209,9 @@ app.post('/api/pick-folder', async (req, res) => {
         ? req.body.prompt.replace(/"/g, '')
         : 'Select Folder';
     const script = `POSIX path of (choose folder with prompt "${promptText}")`;
-    const { stdout } = await execFileAsync('/usr/bin/osascript', ['-e', script]);
+    const { stdout } = await execFileAsync('/usr/bin/osascript', ['-e', script], {
+      env: getHardenedEnv(),
+    });
     const selectedPath = expandTilde(stdout.trim());
     res.json({ path: selectedPath });
   } catch (err) {
@@ -845,6 +871,75 @@ app.get('/api/stream/:filename', async (req, res) => {
   }
 });
 
-app.listen(PORT, '127.0.0.1', () => {
-  console.log(`\n⚡ Audiophile Vault Server running at http://127.0.0.1:${PORT}`);
-});
+// SPA fallback for production when client/dist exists
+if (clientDistDir) {
+  app.get('*', (req, res, next) => {
+    if (req.path.startsWith('/api') || req.path.startsWith('/covers')) {
+      return next();
+    }
+    const indexPath = path.join(clientDistDir, 'index.html');
+    if (fs.existsSync(indexPath)) {
+      return res.sendFile(indexPath);
+    }
+    next();
+  });
+}
+
+let activeHttpServer = null;
+
+/**
+ * Starts the Express backend server on 127.0.0.1.
+ * If preferredPort is 0, the OS dynamically assigns a free port.
+ */
+export function startServer(preferredPort = 0) {
+  return new Promise((resolve, reject) => {
+    const portToUse = typeof preferredPort === 'number' ? preferredPort : 0;
+    const server = app.listen(portToUse, '127.0.0.1', () => {
+      const address = server.address();
+      const boundPort =
+        typeof address === 'object' && address ? address.port : portToUse;
+      activeHttpServer = server;
+      console.log(`\n⚡ Audiophile Vault Server running at http://127.0.0.1:${boundPort}`);
+      resolve({ server, port: boundPort, app });
+    });
+
+    server.on('error', (err) => {
+      console.error('[SERVER LISTEN ERROR]', err.message);
+      reject(err);
+    });
+  });
+}
+
+/**
+ * Cleanly shuts down the HTTP server and terminates active sync processes.
+ */
+export function stopServer() {
+  return new Promise((resolve) => {
+    killActiveRsync();
+    if (activeHttpServer) {
+      activeHttpServer.close((err) => {
+        if (err) console.error('[SERVER CLOSE ERROR]', err.message);
+        activeHttpServer = null;
+        resolve();
+      });
+    } else {
+      resolve();
+    }
+  });
+}
+
+export { app };
+
+// Preserve standalone node execution (e.g. `node server/index.js` outside Electron)
+const isDirectRun =
+  Boolean(process.argv[1]) &&
+  (import.meta.url === `file://${process.argv[1]}` ||
+   import.meta.url.endsWith(process.argv[1].replace(/^[A-Z]:/, '')));
+
+if (isDirectRun) {
+  const standalonePort = parseInt(process.env.PORT, 10) || 3001;
+  startServer(standalonePort).catch((err) => {
+    console.error('[STANDALONE SERVER BOOT ERROR]', err);
+    process.exit(1);
+  });
+}
