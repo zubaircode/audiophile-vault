@@ -39,6 +39,9 @@ public final class VaultSchemeHandler: NSObject, WKURLSchemeHandler, @unchecked 
         "ttf": "font/ttf"
     ]
 
+    private static let maxRangeChunkBytes: Int64 = 1024 * 1024 // 1 MB cap per HTTP 206 slice
+    private static let streamReadChunkBytes: Int = 512 * 1024 // 512 KB chunk for full-file streams
+
     private func markTaskActive(_ task: WKURLSchemeTask) {
         lock.lock()
         activeTasks.insert(ObjectIdentifier(task))
@@ -55,6 +58,21 @@ public final class VaultSchemeHandler: NSObject, WKURLSchemeHandler, @unchecked 
         lock.lock()
         activeTasks.remove(ObjectIdentifier(task))
         lock.unlock()
+    }
+
+    /// Atomically checks whether `task` is active and removes it so it can only be completed once.
+    private func takeTaskIfActive(_ task: WKURLSchemeTask) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return activeTasks.remove(ObjectIdentifier(task)) != nil
+    }
+
+    private func onMain(_ block: @escaping () -> Void) {
+        if Thread.isMainThread {
+            block()
+        } else {
+            DispatchQueue.main.async(execute: block)
+        }
     }
 
     public func webView(_ webView: WKWebView, start urlSchemeTask: WKURLSchemeTask) {
@@ -159,18 +177,41 @@ public final class VaultSchemeHandler: NSObject, WKURLSchemeHandler, @unchecked 
         var statusCode = 200
 
         if let rangeStr = rangeHeader, rangeStr.lowercased().hasPrefix("bytes=") {
-            let spec = String(rangeStr.dropFirst("bytes=".count))
+            let spec = String(rangeStr.dropFirst("bytes=".count)).split(separator: ",").first.map(String.init) ?? ""
             let parts = spec.split(separator: "-", omittingEmptySubsequences: false)
             if parts.count == 2 {
                 let startStr = String(parts[0]).trimmingCharacters(in: .whitespaces)
                 let endStr = String(parts[1]).trimmingCharacters(in: .whitespaces)
-                if let s = Int64(startStr) { startOffset = s }
-                if let e = Int64(endStr), e < fileSize { endOffset = e }
-                statusCode = 206
+                if startStr.isEmpty, let suffixLen = Int64(endStr), suffixLen > 0 {
+                    startOffset = max(0, fileSize - suffixLen)
+                    endOffset = max(0, fileSize - 1)
+                    statusCode = 206
+                } else {
+                    if let s = Int64(startStr) { startOffset = s }
+                    if !endStr.isEmpty, let e = Int64(endStr), e < fileSize {
+                        endOffset = e
+                    }
+                    // Bound each HTTP 206 response to at most 1 MB so range probes don't load entire lossless files
+                    if fileSize > 0 {
+                        endOffset = min(endOffset, startOffset + Self.maxRangeChunkBytes - 1, fileSize - 1)
+                    }
+                    statusCode = 206
+                }
             }
         }
 
-        if startOffset > endOffset || startOffset >= fileSize {
+        if fileSize == 0 {
+            finishWithStatus(task, url: url, status: 200, headers: [
+                "Content-Type": mimeType,
+                "Accept-Ranges": "bytes",
+                "Content-Length": "0",
+                "Cache-Control": "no-cache",
+                "Access-Control-Allow-Origin": "*"
+            ], body: Data())
+            return
+        }
+
+        if startOffset > endOffset || startOffset >= fileSize || startOffset < 0 {
             finishWithStatus(task, url: url, status: 416, headers: [
                 "Content-Range": "bytes */\(fileSize)"
             ], body: Data())
@@ -193,26 +234,81 @@ public final class VaultSchemeHandler: NSObject, WKURLSchemeHandler, @unchecked 
               let response = HTTPURLResponse(url: url, statusCode: statusCode, httpVersion: "HTTP/1.1", headerFields: headers) else {
             return
         }
-        task.didReceive(response)
 
-        try? handle.seek(toOffset: UInt64(startOffset))
-        var remaining = Int(chunkSize)
-        let bufferSize = 256 * 1024
-
-        while remaining > 0 && isTaskActive(task) {
-            let toRead = min(bufferSize, remaining)
-            guard let data = try? handle.read(upToCount: toRead), !data.isEmpty else {
-                break
+        // Fast path for bounded HTTP 206 slices (<= 1 MB): read on ioQueue, deliver atomically on main thread
+        if chunkSize <= Int64(Self.maxRangeChunkBytes) {
+            try? handle.seek(toOffset: UInt64(startOffset))
+            guard isTaskActive(task) else { return }
+            let sliceData = (try? handle.read(upToCount: Int(chunkSize))) ?? Data()
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self, self.takeTaskIfActive(task) else { return }
+                task.didReceive(response)
+                if !sliceData.isEmpty {
+                    task.didReceive(sliceData)
+                }
+                task.didFinish()
             }
-            if isTaskActive(task) {
-                task.didReceive(data)
-            }
-            remaining -= data.count
+            return
         }
 
-        if isTaskActive(task) {
-            unmarkTask(task)
-            task.didFinish()
+        // Full-file 200 stream without Range: send response on main thread, then stream 512 KB chunks via ioQueue -> main
+        let fileURL = URL(fileURLWithPath: filePath)
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self, self.isTaskActive(task) else { return }
+            task.didReceive(response)
+            self.streamNextChunk(
+                task: task,
+                fileURL: fileURL,
+                offset: UInt64(startOffset),
+                remaining: Int(chunkSize)
+            )
+        }
+    }
+
+    private func streamNextChunk(task: WKURLSchemeTask, fileURL: URL, offset: UInt64, remaining: Int) {
+        guard isTaskActive(task) else { return }
+        if remaining <= 0 {
+            onMain { [weak self] in
+                guard let self = self, self.takeTaskIfActive(task) else { return }
+                task.didFinish()
+            }
+            return
+        }
+
+        ioQueue.async { [weak self] in
+            guard let self = self, self.isTaskActive(task) else { return }
+            guard let handle = try? FileHandle(forReadingFrom: fileURL) else {
+                self.finishWithError(task, status: 500, message: "Failed to read audio stream")
+                return
+            }
+            defer { try? handle.close() }
+            try? handle.seek(toOffset: offset)
+            let toRead = min(Self.streamReadChunkBytes, remaining)
+            let data = (try? handle.read(upToCount: toRead)) ?? Data()
+
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self, self.isTaskActive(task) else { return }
+                if data.isEmpty {
+                    if self.takeTaskIfActive(task) {
+                        task.didFinish()
+                    }
+                    return
+                }
+                task.didReceive(data)
+                let nextRemaining = remaining - data.count
+                if nextRemaining <= 0 {
+                    if self.takeTaskIfActive(task) {
+                        task.didFinish()
+                    }
+                } else {
+                    self.streamNextChunk(
+                        task: task,
+                        fileURL: fileURL,
+                        offset: offset + UInt64(data.count),
+                        remaining: nextRemaining
+                    )
+                }
+            }
         }
     }
 
@@ -287,20 +383,22 @@ public final class VaultSchemeHandler: NSObject, WKURLSchemeHandler, @unchecked 
     }
 
     private func finishWithStatus(_ task: WKURLSchemeTask, url: URL, status: Int, headers: [String: String], body: Data) {
-        guard isTaskActive(task) else { return }
-        unmarkTask(task)
-        if let response = HTTPURLResponse(url: url, statusCode: status, httpVersion: "HTTP/1.1", headerFields: headers) {
-            task.didReceive(response)
+        onMain { [weak self] in
+            guard let self = self, self.takeTaskIfActive(task) else { return }
+            if let response = HTTPURLResponse(url: url, statusCode: status, httpVersion: "HTTP/1.1", headerFields: headers) {
+                task.didReceive(response)
+            }
+            if !body.isEmpty {
+                task.didReceive(body)
+            }
+            task.didFinish()
         }
-        if !body.isEmpty {
-            task.didReceive(body)
-        }
-        task.didFinish()
     }
 
     private func finishWithError(_ task: WKURLSchemeTask, status: Int, message: String) {
-        guard isTaskActive(task) else { return }
-        unmarkTask(task)
-        task.didFailWithError(NSError(domain: "VaultSchemeHandler", code: status, userInfo: [NSLocalizedDescriptionKey: message]))
+        onMain { [weak self] in
+            guard let self = self, self.takeTaskIfActive(task) else { return }
+            task.didFailWithError(NSError(domain: "VaultSchemeHandler", code: status, userInfo: [NSLocalizedDescriptionKey: message]))
+        }
     }
 }
