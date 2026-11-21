@@ -445,4 +445,551 @@ public final class VolumeAndSyncService: @unchecked Sendable {
 
         emitSyncEvent(type: "DONE", message: "[DONE] Sync to \"\(targetMusicDir)\" finished cleanly (exit code 0).")
     }
+
+    // MARK: - Android-Safe Wi-Fi FTP Delta-Sync Engine
+    public struct FtpRemoteEntry: Sendable {
+        public let name: String
+        public let size: Int64
+        public let isDirectory: Bool
+    }
+
+    private static let ftpIgnoredSystemNames: Set<String> = [
+        ".", "..", "lost.dir", ".android_secure", "system volume information",
+        "$recycle.bin", ".ds_store", ".vault_index.json"
+    ]
+
+    public static func normalizeFtpRemoteDir(_ rawPath: String) -> String {
+        var p = rawPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        if p.isEmpty || p == "/" { return "" }
+        if !p.hasPrefix("/") { p = "/" + p }
+        while p.hasSuffix("/") && p.count > 1 {
+            p.removeLast()
+        }
+        return p == "/" ? "" : p
+    }
+
+    private static func buildFtpUrl(host: String, port: Int, remoteDir: String, filename: String? = nil, trailingSlash: Bool = false) -> String {
+        let encodedDir = remoteDir
+            .split(separator: "/")
+            .map { seg -> String in
+                let s = String(seg)
+                return s.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? s
+            }
+            .joined(separator: "/")
+        let dirPart = encodedDir.isEmpty ? "" : "/\(encodedDir)"
+        if let file = filename, !file.isEmpty {
+            let encodedFile = file.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? file
+            return "ftp://\(host):\(port)\(dirPart)/\(encodedFile)"
+        }
+        return "ftp://\(host):\(port)\(dirPart)\(trailingSlash ? "/" : "")"
+    }
+
+    private static func formatByteCount(_ bytes: Int64) -> String {
+        if bytes < 1024 { return "\(bytes) B" }
+        let kb = Double(bytes) / 1024.0
+        if kb < 1024.0 { return String(format: "%.1f KB", kb) }
+        let mb = kb / 1024.0
+        return String(format: "%.2f MB", mb)
+    }
+
+    public static func parseFtpListOutput(_ output: String) -> [FtpRemoteEntry] {
+        var entries: [FtpRemoteEntry] = []
+        for rawLine in output.components(separatedBy: .newlines) {
+            let line = rawLine.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+            guard !line.isEmpty else { continue }
+
+            // 1. Standard Unix `LIST` format:
+            // -rw-r--r-- 1 user group 12345678 Nov 20 22:00 Track Name.m4a
+            if line.hasPrefix("-") || line.hasPrefix("d") || line.hasPrefix("l") {
+                let isDir = line.hasPrefix("d")
+                // Split into up to 8 tokens + remaining filename (preserving spaces)
+                var idx = line.startIndex
+                var tokenRanges: [Range<String.Index>] = []
+                while idx < line.endIndex && tokenRanges.count < 8 {
+                    while idx < line.endIndex && line[idx].isWhitespace {
+                        idx = line.index(after: idx)
+                    }
+                    guard idx < line.endIndex else { break }
+                    let start = idx
+                    while idx < line.endIndex && !line[idx].isWhitespace {
+                        idx = line.index(after: idx)
+                    }
+                    tokenRanges.append(start..<idx)
+                }
+                guard tokenRanges.count >= 8 else { continue }
+                let sizeStr = String(line[tokenRanges[4]])
+                let size = Int64(sizeStr) ?? 0
+                while idx < line.endIndex && line[idx].isWhitespace {
+                    idx = line.index(after: idx)
+                }
+                guard idx < line.endIndex else { continue }
+                let name = String(line[idx...]).trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !name.isEmpty, !ftpIgnoredSystemNames.contains(name.lowercased()) else { continue }
+                entries.append(FtpRemoteEntry(name: name, size: size, isDirectory: isDir))
+                continue
+            }
+
+            // 2. DOS/Windows `LIST` fallback:
+            // 11-20-26  10:00PM       12345678 Track Name.m4a
+            let dosRegex = try? NSRegularExpression(pattern: #"^\d{2}-\d{2}-\d{2,4}\s+\d{2}:\d{2}(?:AM|PM)?\s+(<DIR>|\d+)\s+(.+)$"#, options: [.caseInsensitive])
+            if let match = dosRegex?.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)),
+               let sizeRange = Range(match.range(at: 1), in: line),
+               let nameRange = Range(match.range(at: 2), in: line) {
+                let sizeToken = String(line[sizeRange])
+                let isDir = sizeToken.uppercased() == "<DIR>"
+                let size = isDir ? 0 : (Int64(sizeToken) ?? 0)
+                let name = String(line[nameRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !name.isEmpty, !ftpIgnoredSystemNames.contains(name.lowercased()) else { continue }
+                entries.append(FtpRemoteEntry(name: name, size: size, isDirectory: isDir))
+            }
+        }
+        return entries
+    }
+
+    private func runCurlCommand(args: [String], trackActiveProcess: Bool = false) throws -> (exitCode: Int32, stdout: String, stderr: String) {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
+        proc.arguments = args
+
+        let outPipe = Pipe()
+        let errPipe = Pipe()
+        proc.standardOutput = outPipe
+        proc.standardError = errPipe
+
+        if trackActiveProcess {
+            lock.lock()
+            activeProcess = proc
+            lock.unlock()
+        }
+
+        defer {
+            if trackActiveProcess {
+                lock.lock()
+                if activeProcess === proc { activeProcess = nil }
+                lock.unlock()
+            }
+        }
+
+        try proc.run()
+        let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
+        let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+        proc.waitUntilExit()
+
+        let outStr = String(data: outData, encoding: .utf8) ?? ""
+        let errStr = String(data: errData, encoding: .utf8) ?? ""
+        return (proc.terminationStatus, outStr, errStr)
+    }
+
+    private func ftpAuthArgs(username: String, password: String) -> [String] {
+        let user = username.trimmingCharacters(in: .whitespacesAndNewlines)
+        if user.isEmpty { return [] }
+        return ["--user", "\(user):\(password)"]
+    }
+
+    public func listFtpDirectory(
+        host: String,
+        port: Int,
+        remoteDir: String,
+        username: String,
+        password: String
+    ) throws -> [FtpRemoteEntry] {
+        let url = Self.buildFtpUrl(host: host, port: port, remoteDir: remoteDir, trailingSlash: true)
+        var args = ["-sS", "--ftp-pasv", "--connect-timeout", "8"]
+        args.append(contentsOf: ftpAuthArgs(username: username, password: password))
+        args.append(url)
+
+        let res = try runCurlCommand(args: args)
+        if res.exitCode != 0 {
+            let msg = res.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            throw NSError(domain: "VolumeAndSyncService", code: Int(res.exitCode), userInfo: [
+                NSLocalizedDescriptionKey: msg.isEmpty ? "FTP directory listing failed (curl exit \(res.exitCode))" : msg
+            ])
+        }
+        return Self.parseFtpListOutput(res.stdout)
+    }
+
+    private func deleteFtpFile(
+        host: String,
+        port: Int,
+        remoteDir: String,
+        filename: String,
+        username: String,
+        password: String,
+        ignoreMissing: Bool = false
+    ) throws {
+        let relPath = remoteDir.isEmpty ? filename : "\(remoteDir)/\(filename)"
+        let rootUrl = "ftp://\(host):\(port)/"
+        var args = ["-sS", "--ftp-pasv", "--connect-timeout", "8"]
+        args.append(contentsOf: ftpAuthArgs(username: username, password: password))
+        args.append(contentsOf: ["-Q", "DELE \(relPath)", rootUrl])
+
+        let res = try runCurlCommand(args: args)
+        if res.exitCode != 0 && !ignoreMissing {
+            let msg = res.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            throw NSError(domain: "VolumeAndSyncService", code: Int(res.exitCode), userInfo: [
+                NSLocalizedDescriptionKey: msg.isEmpty ? "FTP DELE failed for \(filename)" : msg
+            ])
+        }
+    }
+
+    private func uploadFtpFile(
+        localPath: String,
+        host: String,
+        port: Int,
+        remoteDir: String,
+        filename: String,
+        username: String,
+        password: String
+    ) throws {
+        let fileUrl = Self.buildFtpUrl(host: host, port: port, remoteDir: remoteDir, filename: filename)
+        var args = ["-sS", "--ftp-pasv", "--ftp-create-dirs", "--connect-timeout", "10"]
+        args.append(contentsOf: ftpAuthArgs(username: username, password: password))
+        args.append(contentsOf: ["-T", localPath, fileUrl])
+
+        let res = try runCurlCommand(args: args, trackActiveProcess: true)
+        if res.exitCode != 0 {
+            let msg = res.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            throw NSError(domain: "VolumeAndSyncService", code: Int(res.exitCode), userInfo: [
+                NSLocalizedDescriptionKey: msg.isEmpty ? "FTP upload failed for \(filename) (curl exit \(res.exitCode))" : msg
+            ])
+        }
+    }
+
+    public func testFtpConnection(
+        serviceName: String? = nil,
+        manualHost: String? = nil,
+        manualPort: Int? = nil,
+        username: String? = nil,
+        password: String? = nil,
+        remotePath: String? = nil
+    ) throws -> [String: Any] {
+        let cfg = LibraryService.shared.config
+        let svcName = serviceName ?? cfg.ftpServiceName
+        let mHost = manualHost ?? cfg.ftpManualHost
+        let mPort = manualPort ?? cfg.ftpManualPort
+        let user = username ?? cfg.ftpUsername
+        let pass = password ?? cfg.ftpPassword
+        let rDir = Self.normalizeFtpRemoteDir(remotePath ?? cfg.ftpRemotePath)
+
+        guard let target = BonjourFtpBrowser.shared.resolveTarget(
+            serviceName: svcName,
+            manualHost: mHost,
+            manualPort: mPort
+        ) else {
+            let label = svcName.isEmpty ? "WiFiFTP" : svcName
+            throw NSError(domain: "VolumeAndSyncService", code: 404, userInfo: [
+                NSLocalizedDescriptionKey: "Bonjour FTP service \"\(label)\" is offline or not yet resolved. Start the FTP server on your player or enter a manual host."
+            ])
+        }
+
+        let entries = try listFtpDirectory(
+            host: target.host,
+            port: target.port,
+            remoteDir: rDir,
+            username: user,
+            password: pass
+        )
+
+        return [
+            "ok": true,
+            "serviceName": target.label,
+            "host": target.host,
+            "port": target.port,
+            "remotePath": rDir.isEmpty ? "/" : rDir,
+            "fileCount": entries.count
+        ]
+    }
+
+    public func ftpListDirectory(
+        path: String,
+        serviceName: String? = nil,
+        manualHost: String? = nil,
+        manualPort: Int? = nil,
+        username: String? = nil,
+        password: String? = nil
+    ) throws -> [String: Any] {
+        let cfg = LibraryService.shared.config
+        let svcName = serviceName ?? cfg.ftpServiceName
+        let mHost = manualHost ?? cfg.ftpManualHost
+        let mPort = manualPort ?? cfg.ftpManualPort
+        let user = username ?? cfg.ftpUsername
+        let pass = password ?? cfg.ftpPassword
+
+        let rDir = Self.normalizeFtpRemoteDir(path)
+        let currentPath = rDir.isEmpty ? "/" : rDir
+        let parentPath: String? = currentPath == "/" ? nil : {
+            let p = (currentPath as NSString).deletingLastPathComponent
+            return p.isEmpty ? "/" : p
+        }()
+
+        guard let target = BonjourFtpBrowser.shared.resolveTarget(
+            serviceName: svcName,
+            manualHost: mHost,
+            manualPort: mPort
+        ) else {
+            let label = svcName.isEmpty ? "WiFiFTP" : svcName
+            throw NSError(domain: "VolumeAndSyncService", code: 404, userInfo: [
+                NSLocalizedDescriptionKey: "Bonjour FTP service \"\(label)\" is offline or not yet resolved."
+            ])
+        }
+
+        let entries = try listFtpDirectory(
+            host: target.host,
+            port: target.port,
+            remoteDir: rDir,
+            username: user,
+            password: pass
+        )
+
+        let directories = entries
+            .filter { $0.isDirectory }
+            .map { $0.name }
+            .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+
+        let files = entries.filter { !$0.isDirectory }
+        let audioFiles = files.filter { entry in
+            let ext = "." + (entry.name as NSString).pathExtension.lowercased()
+            return LibraryService.supportedExtensions.contains(ext)
+        }
+
+        return [
+            "currentPath": currentPath,
+            "parentPath": parentPath as Any,
+            "directories": directories,
+            "audioFileCount": audioFiles.count,
+            "totalFileCount": files.count,
+            "sampleFiles": Array(audioFiles.prefix(5).map { $0.name })
+        ]
+    }
+
+    public func ftpVerifyWritable(
+        path: String,
+        serviceName: String? = nil,
+        manualHost: String? = nil,
+        manualPort: Int? = nil,
+        username: String? = nil,
+        password: String? = nil
+    ) -> [String: Any] {
+        let cfg = LibraryService.shared.config
+        let svcName = serviceName ?? cfg.ftpServiceName
+        let mHost = manualHost ?? cfg.ftpManualHost
+        let mPort = manualPort ?? cfg.ftpManualPort
+        let user = username ?? cfg.ftpUsername
+        let pass = password ?? cfg.ftpPassword
+
+        let rDir = Self.normalizeFtpRemoteDir(path)
+        let displayPath = rDir.isEmpty ? "/" : rDir
+
+        guard let target = BonjourFtpBrowser.shared.resolveTarget(
+            serviceName: svcName,
+            manualHost: mHost,
+            manualPort: mPort
+        ) else {
+            let label = svcName.isEmpty ? "WiFiFTP" : svcName
+            return [
+                "writable": false,
+                "path": displayPath,
+                "error": "Bonjour FTP service \"\(label)\" is offline or not yet resolved."
+            ]
+        }
+
+        let localProbePath = (NSTemporaryDirectory() as NSString)
+            .appendingPathComponent("av_write_probe_\(UUID().uuidString).tmp")
+        let probeData = Data("audiophile-vault".utf8)
+        FileManager.default.createFile(atPath: localProbePath, contents: probeData)
+        defer { try? FileManager.default.removeItem(atPath: localProbePath) }
+
+        let remoteProbeName = ".av_write_test.tmp"
+        do {
+            try uploadFtpFile(
+                localPath: localProbePath,
+                host: target.host,
+                port: target.port,
+                remoteDir: rDir,
+                filename: remoteProbeName,
+                username: user,
+                password: pass
+            )
+            try deleteFtpFile(
+                host: target.host,
+                port: target.port,
+                remoteDir: rDir,
+                filename: remoteProbeName,
+                username: user,
+                password: pass,
+                ignoreMissing: false
+            )
+            return [
+                "writable": true,
+                "path": displayPath
+            ]
+        } catch {
+            // Best-effort cleanup if STOR succeeded but DELE failed
+            try? deleteFtpFile(
+                host: target.host,
+                port: target.port,
+                remoteDir: rDir,
+                filename: remoteProbeName,
+                username: user,
+                password: pass,
+                ignoreMissing: true
+            )
+            return [
+                "writable": false,
+                "path": displayPath,
+                "error": error.localizedDescription
+            ]
+        }
+    }
+
+    public func runFtpSync() async throws {
+        try lock.withLock {
+            if isSyncing {
+                throw NSError(domain: "VolumeAndSyncService", code: 409, userInfo: [NSLocalizedDescriptionKey: "A sync operation is already in progress."])
+            }
+            isSyncing = true
+        }
+
+        defer {
+            lock.withLock {
+                activeProcess = nil
+                isSyncing = false
+            }
+        }
+
+        let lib = LibraryService.shared
+        let cfg = lib.config
+        let vaultDir = lib.getVaultDir()
+        let svcName = cfg.ftpServiceName.isEmpty ? "WiFiFTP" : cfg.ftpServiceName
+        let rDir = Self.normalizeFtpRemoteDir(cfg.ftpRemotePath)
+        let rDirDisplay = rDir.isEmpty ? "/" : rDir
+
+        emitSyncEvent(type: "RSYNC", message: "[FTP SYNC] Resolving \(svcName)...")
+
+        guard let target = BonjourFtpBrowser.shared.resolveTarget(
+            serviceName: cfg.ftpServiceName,
+            manualHost: cfg.ftpManualHost,
+            manualPort: cfg.ftpManualPort
+        ) else {
+            let msg = "[ERROR] [FTP SYNC] Could not resolve \"\(svcName)\". Ensure the player's Wi-Fi FTP server is running."
+            emitSyncEvent(type: "ERROR", message: msg)
+            throw NSError(domain: "VolumeAndSyncService", code: 404, userInfo: [NSLocalizedDescriptionKey: msg])
+        }
+
+        emitSyncEvent(type: "RSYNC", message: "[FTP SYNC] Connected to \(target.label) (\(target.host):\(target.port)\(rDirDisplay))")
+
+        PlaylistService.shared.syncAllPlaylistsM3u()
+
+        let remoteEntries = try listFtpDirectory(
+            host: target.host,
+            port: target.port,
+            remoteDir: rDir,
+            username: cfg.ftpUsername,
+            password: cfg.ftpPassword
+        )
+        var remoteByName: [String: FtpRemoteEntry] = [:]
+        for entry in remoteEntries where !entry.isDirectory {
+            remoteByName[entry.name] = entry
+        }
+
+        let fm = FileManager.default
+        let localNames = (try? fm.contentsOfDirectory(atPath: vaultDir)) ?? []
+
+        var localAudioFiles: [(name: String, path: String, size: Int64)] = []
+        var localPlaylistFiles: [(name: String, path: String)] = []
+        var localAllSet = Set<String>()
+
+        for name in localNames.sorted() {
+            if name.hasPrefix(".") || name == ".vault_index.json" { continue }
+            let fullPath = (vaultDir as NSString).appendingPathComponent(name)
+            var isDir: ObjCBool = false
+            guard fm.fileExists(atPath: fullPath, isDirectory: &isDir), !isDir.boolValue else { continue }
+            let ext = "." + (name as NSString).pathExtension.lowercased()
+            if LibraryService.supportedExtensions.contains(ext) {
+                let attrs = try? fm.attributesOfItem(atPath: fullPath)
+                let size = (attrs?[.size] as? NSNumber)?.int64Value ?? 0
+                localAudioFiles.append((name, fullPath, size))
+                localAllSet.insert(name)
+            } else if ext == ".m3u" || ext == ".m3u8" {
+                localPlaylistFiles.append((name, fullPath))
+                localAllSet.insert(name)
+            }
+        }
+
+        var uploaded = 0
+        var skipped = 0
+        var playlistsUpdated = 0
+        var removed = 0
+
+        // 1. Size-only delta sync for audio tracks (Android 13 SAF compatible)
+        for item in localAudioFiles {
+            if let remote = remoteByName[item.name], remote.size == item.size {
+                skipped += 1
+                continue
+            }
+            emitSyncEvent(type: "RSYNC", message: "[FTP SYNC] Uploading \(item.name) (\(Self.formatByteCount(item.size)))")
+            try uploadFtpFile(
+                localPath: item.path,
+                host: target.host,
+                port: target.port,
+                remoteDir: rDir,
+                filename: item.name,
+                username: cfg.ftpUsername,
+                password: cfg.ftpPassword
+            )
+            uploaded += 1
+        }
+
+        // 2. Safe playlist overwrite: DELE before STOR for .m3u / .m3u8
+        for pl in localPlaylistFiles {
+            emitSyncEvent(type: "PLAYLIST", message: "[FTP SYNC] Updating playlist \(pl.name)")
+            if remoteByName[pl.name] != nil {
+                try deleteFtpFile(
+                    host: target.host,
+                    port: target.port,
+                    remoteDir: rDir,
+                    filename: pl.name,
+                    username: cfg.ftpUsername,
+                    password: cfg.ftpPassword,
+                    ignoreMissing: true
+                )
+            }
+            try uploadFtpFile(
+                localPath: pl.path,
+                host: target.host,
+                port: target.port,
+                remoteDir: rDir,
+                filename: pl.name,
+                username: cfg.ftpUsername,
+                password: cfg.ftpPassword
+            )
+            playlistsUpdated += 1
+        }
+
+        // 3. Mirror deletions for removed tracks/playlists (ignoring Android system folders)
+        for remote in remoteEntries where !remote.isDirectory {
+            let ext = "." + (remote.name as NSString).pathExtension.lowercased()
+            let isManagedAudio = LibraryService.supportedExtensions.contains(ext)
+            let isManagedPlaylist = (ext == ".m3u" || ext == ".m3u8")
+            guard isManagedAudio || isManagedPlaylist else { continue }
+            if !localAllSet.contains(remote.name) {
+                emitSyncEvent(type: "RSYNC", message: "[FTP SYNC] Removing \(remote.name)")
+                try deleteFtpFile(
+                    host: target.host,
+                    port: target.port,
+                    remoteDir: rDir,
+                    filename: remote.name,
+                    username: cfg.ftpUsername,
+                    password: cfg.ftpPassword,
+                    ignoreMissing: true
+                )
+                removed += 1
+            }
+        }
+
+        emitSyncEvent(
+            type: "DONE",
+            message: "[DONE] [FTP SYNC] Complete: \(uploaded) uploaded, \(skipped) skipped, \(playlistsUpdated) playlists updated, \(removed) removed"
+        )
+    }
 }

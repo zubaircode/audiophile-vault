@@ -53,6 +53,7 @@ function AppContent() {
 
   const [volumes, setVolumes] = useState([]);
   const [selectedVolumePath, setSelectedVolumePath] = useState('');
+  const [ftpServices, setFtpServices] = useState([]);
   const [tracks, setTracks] = useState([]);
   const [searchQuery, setSearchQuery] = useState(() => {
     try {
@@ -293,21 +294,43 @@ function AppContent() {
     }
   }, []);
 
-  // Initial load + periodic volume polling (every 8s)
+  const fetchFtpServices = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/ftp/services`);
+      if (!res.ok) return;
+      const data = await res.json();
+      setFtpServices(Array.isArray(data.services) ? data.services : []);
+    } catch {
+      // Ignore transient bridge errors
+    }
+  }, []);
+
+  // Initial load + periodic volume/Bonjour polling (every 8s)
   useEffect(() => {
     (async () => {
       await fetchConfig();
       await fetchVolumes();
+      await fetchFtpServices();
     })();
     fetchTracks();
     fetchPlaylists();
 
+    window.__avNotifyFtpServices = (list) => {
+      setFtpServices(Array.isArray(list) ? list : []);
+    };
+
     const interval = setInterval(() => {
       fetchVolumes();
+      fetchFtpServices();
     }, 8000);
 
-    return () => clearInterval(interval);
-  }, [fetchConfig, fetchVolumes, fetchTracks, fetchPlaylists]);
+    return () => {
+      clearInterval(interval);
+      if (window.__avNotifyFtpServices) {
+        delete window.__avNotifyFtpServices;
+      }
+    };
+  }, [fetchConfig, fetchVolumes, fetchFtpServices, fetchTracks, fetchPlaylists]);
 
   const connectIngestStream = useCallback(
     ({ replay = false } = {}) => {
@@ -1075,6 +1098,13 @@ function AppContent() {
         sourcePath: cleanPathInput(newConfig.sourcePath),
         vaultPath: cleanPathInput(newConfig.vaultPath),
         sdCardPath: cleanPathInput(newConfig.sdCardPath || newConfig.targetPath),
+        syncTargetMode: newConfig.syncTargetMode === 'ftp' ? 'ftp' : 'sd',
+        ftpServiceName: (newConfig.ftpServiceName || 'WiFiFTP').trim(),
+        ftpManualHost: (newConfig.ftpManualHost || '').trim(),
+        ftpManualPort: Number(newConfig.ftpManualPort) || 2121,
+        ftpUsername: (newConfig.ftpUsername || '').trim(),
+        ftpPassword: newConfig.ftpPassword || '',
+        ftpRemotePath: (newConfig.ftpRemotePath || '/').trim() || '/',
       };
       const res = await fetch(`${API_BASE}/api/config`, {
         method: 'POST',
@@ -1158,14 +1188,19 @@ function AppContent() {
   };
 
   const handleStartSync = async () => {
-    if (!selectedVolumePath) return;
+    const isFtpMode = config.syncTargetMode === 'ftp';
+    if (!isFtpMode && !selectedVolumePath) return;
     setIsConsoleOpen(true);
     setIsSyncing(true);
     try {
       const res = await fetch(`${API_BASE}/api/sync`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ volumePath: selectedVolumePath }),
+        body: JSON.stringify(
+          isFtpMode
+            ? { syncTargetMode: 'ftp' }
+            : { syncTargetMode: 'sd', volumePath: selectedVolumePath }
+        ),
       });
       if (!res.ok) {
         const err = await res.json();
@@ -1402,6 +1437,10 @@ function AppContent() {
         activePlaylist={activePlaylist}
         vaultBytes={config.stats?.totalBytes || 0}
         activeVolume={activeVolume}
+        syncTargetMode={config.syncTargetMode || 'sd'}
+        ftpServiceName={config.ftpServiceName || 'WiFiFTP'}
+        ftpManualHost={config.ftpManualHost || ''}
+        ftpServices={ftpServices}
         isWorking={isIngesting || isFetchingArtwork || isSyncing}
         isFetchingArtwork={isFetchingArtwork}
         onStartArtworkFetch={handleStartArtworkFetch}
@@ -1418,6 +1457,10 @@ function AppContent() {
         onJumpToNowPlaying={jumpToNowPlaying}
         volumes={volumes}
         selectedVolumePath={selectedVolumePath}
+        syncTargetMode={config.syncTargetMode || 'sd'}
+        ftpServiceName={config.ftpServiceName || 'WiFiFTP'}
+        ftpManualHost={config.ftpManualHost || ''}
+        ftpServices={ftpServices}
         onStartIngest={handleStartIngest}
         onStartSync={handleStartSync}
         onEjectVolume={handleEjectVolume}
@@ -1507,6 +1550,7 @@ function AppContent() {
           onClose={() => setIsSettingsOpen(false)}
           config={config}
           volumes={volumes}
+          ftpServices={ftpServices}
           selectedVolumePath={selectedVolumePath}
           onSelectVolume={handleSelectVolume}
           onSaveSettings={handleSaveSettings}

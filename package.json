@@ -1,7 +1,7 @@
 {
   "name": "audiophile-vault",
   "productName": "Audiophile Vault",
-  "version": "1.0.0",
+  "version": "2.1.0",
   "description": "Local, distraction-free audiophile music vault, lossless tag curator, and SD card sync hub for macOS",
   "type": "module",
   "scripts": {

@@ -10,6 +10,7 @@ import {
   Sun,
   Moon,
   Snowflake,
+  Wifi,
 } from 'lucide-react';
 import { formatBytes } from './UnifiedControlBar.jsx';
 import { useTheme } from '../context/ThemeContext.jsx';
@@ -22,6 +23,10 @@ const Header = memo(function Header({
   activePlaylist,
   vaultBytes = 0,
   activeVolume = null,
+  syncTargetMode = 'sd',
+  ftpServiceName = 'WiFiFTP',
+  ftpManualHost = '',
+  ftpServices = [],
   isWorking = false,
   isFetchingArtwork = false,
   onStartArtworkFetch,
@@ -235,33 +240,68 @@ const Header = memo(function Header({
             </div>
           </div>
 
-          {/* 4. TARGET SD Stat Card */}
-          <div className="h-14 px-3.5 flex flex-col justify-center rounded-lg bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 shadow-xs dark:shadow-none transition-colors">
-            <span className="text-[10px] font-semibold text-zinc-500 dark:text-zinc-500 uppercase tracking-wider leading-none mb-1.5 select-none">
-              Target SD
-            </span>
-            <div className="flex items-center gap-2 leading-none">
-              <HardDrive
-                className={`w-4 h-4 shrink-0 ${
-                  activeVolume ? 'text-emerald-600 dark:text-emerald-400' : 'text-zinc-400 dark:text-zinc-600'
-                }`}
-              />
-              {activeVolume ? (
-                <div className="flex items-baseline gap-1.5 font-mono">
-                  <span className="text-sm font-bold text-zinc-900 dark:text-zinc-100">
-                    {activeVolume.name}
-                  </span>
-                  <span className="text-xs text-zinc-500 dark:text-zinc-400 font-normal">
-                    ({formatBytes(activeVolume.freeSpace)} free)
-                  </span>
-                </div>
-              ) : (
-                <span className="text-xs text-zinc-500 dark:text-zinc-400 italic font-normal">
-                  No SD Detected
+          {/* 4. TARGET Stat Card (SD Card or Wi-Fi FTP) */}
+          {(() => {
+            const isFtp = syncTargetMode === 'ftp';
+            const preferredName = ftpServiceName || 'WiFiFTP';
+            const matchedSvc = ftpServices.find(
+              (s) => s.instanceName?.toLowerCase() === preferredName.toLowerCase()
+            );
+            const ftpReady = Boolean(ftpManualHost?.trim()) || Boolean(matchedSvc?.resolved);
+            const displayName = matchedSvc?.instanceName || ftpServiceName?.trim() || 'FTP';
+
+            return (
+              <div className="h-14 px-3.5 flex flex-col justify-center rounded-lg bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 shadow-xs dark:shadow-none transition-colors">
+                <span className="text-[10px] font-semibold text-zinc-500 dark:text-zinc-500 uppercase tracking-wider leading-none mb-1.5 select-none">
+                  {isFtp ? 'Target FTP' : 'Target SD'}
                 </span>
-              )}
-            </div>
-          </div>
+                {isFtp ? (
+                  <div
+                    className="flex items-center gap-2 leading-none"
+                    title={ftpReady ? `${displayName} (Online)` : `${displayName} (Offline)`}
+                  >
+                    <Wifi
+                      className={`w-4 h-4 shrink-0 ${
+                        ftpReady
+                          ? 'text-emerald-600 dark:text-emerald-400'
+                          : 'text-zinc-400 dark:text-zinc-600'
+                      }`}
+                    />
+                    <span className="text-sm font-mono font-bold text-zinc-900 dark:text-zinc-100">
+                      {displayName}
+                    </span>
+                    <span
+                      className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                        ftpReady ? 'bg-emerald-500' : 'bg-zinc-400 dark:bg-zinc-600'
+                      }`}
+                    />
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2 leading-none">
+                    <HardDrive
+                      className={`w-4 h-4 shrink-0 ${
+                        activeVolume ? 'text-emerald-600 dark:text-emerald-400' : 'text-zinc-400 dark:text-zinc-600'
+                      }`}
+                    />
+                    {activeVolume ? (
+                      <div className="flex items-baseline gap-1.5 font-mono">
+                        <span className="text-sm font-bold text-zinc-900 dark:text-zinc-100">
+                          {activeVolume.name}
+                        </span>
+                        <span className="text-xs text-zinc-500 dark:text-zinc-400 font-normal">
+                          ({formatBytes(activeVolume.freeSpace)} free)
+                        </span>
+                      </div>
+                    ) : (
+                      <span className="text-xs text-zinc-500 dark:text-zinc-400 italic font-normal">
+                        No SD Detected
+                      </span>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
 
           {/* 5. SNOWSKY Mode (Playlist Folder Export) Toggle Button */}
           <button

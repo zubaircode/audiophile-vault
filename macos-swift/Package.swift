@@ -20,7 +20,8 @@ let package = Package(
                 .linkedFramework("ImageIO"),
                 .linkedFramework("CoreGraphics"),
                 .linkedFramework("UniformTypeIdentifiers"),
-                .linkedFramework("CryptoKit")
+                .linkedFramework("CryptoKit"),
+                .linkedFramework("Network")
             ]
         )
     ]

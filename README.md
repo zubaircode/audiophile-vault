@@ -1,48 +1,40 @@
-# Audiophile Vault
+# Audiophile Vault (v2.1.0)
 
-**Audiophile Vault** is a native macOS desktop application built to automate organizing, curating, and syncing DRM-free music libraries to a mounted SD card for use in a dedicated Digital Audio Player (DAP).
+**Audiophile Vault** is a lightweight (~5.5 MB), native macOS desktop application built to organize, curate, and wirelessly or physically sync DRM-free music libraries to a Digital Audio Player (DAP).
 
----
-
-## Mission & Overview
-
-Managing a lossless or DRM-free music collection for dedicated hardware DAPs (such as HiBy, Sony Walkman, or RTOS-based players like the Snowsky Echo Nano) often involves tedious manual folder cleanup, inconsistent cover art, and fragile playlist formatting. Audiophile Vault eliminates that friction by maintaining a single, clean master vault on macOS and automating differential SD card synchronization with hardware-compliant playlists.
+Built with **Swift (`AppKit` + `WKWebView` + `Network.framework`)** hosting a **React + Vite + Tailwind CSS** interface, Audiophile Vault eliminates Electron, bundled Node.js runtimes, and external CLI binaries (`ffmpeg`, `metaflac`) in favor of native macOS frameworks (`AVFoundation`, `ImageIO`, `CryptoKit`, `WKURLSchemeHandler`) and in-process container tag/artwork embedding.
 
 ---
 
-## Project Scope & Key Features
+## Core Features (v2.1.0)
 
-- **DRM-Free Music Ingestion into a Flat Vault Structure:**
-  - Recursively scans a source music directory (such as Apple Music's media folder) and copies all validated, DRM-free tracks into a single flat master directory (`~/Music/AudiophileVault/`) using a deterministic naming standard: `{Artist} - {Album} - {DiscTrack} - {Title}.{ext}`.
-  - Enforces strict DRM-free checks: allows `.mp3`, `.m4a`, `.flac`, `.alac`, `.wav`, `.aiff`, and `.aac`; explicitly rejects `.m4p`, `.wma`, `.aa`, and `.aax`; scans MP4/M4A containers for FairPlay `drms`/`sinf` atoms; and verifies `AVURLAsset.hasProtectedContent == false` alongside SHA-256 deduplication.
-- **Playlist Creation & Management:**
-  - Create, rename, duplicate, and delete playlists, and reorder tracks via drag-and-drop in the library and playlist sidebar.
-- **Built-In Audio Playback:**
-  - Native HTML5 audio playback backed by HTTP `206 Partial Content` byte-range streaming for instant seeking across lossless and compressed tracks, paired with a decoupled playback queue and **Jump to Now Playing** navigation.
-- **In-Process Cover Art & Tag Curation:**
-  - Extracts, embeds, replaces, and removes album artwork directly inside `.mp3`, `.flac`, and `.m4a`/ALAC containers without external CLI binaries, plus an artist-verified online artwork lookup waterfall (iTunes -> Deezer -> MusicBrainz / Cover Art Archive).
-- **Automated SD Card Sync & Safe Ejection:**
-  - Detects mounted removable volumes under `/Volumes/`, performs incremental `/usr/bin/rsync` synchronization to the target SD card, and safely unmounts/ejects the card via native macOS `NSWorkspace`.
-- **Universal `.m3u` Playlist Generation:**
-  - Generates `.m3u` playlists formatted specifically for Android and embedded RTOS DAPs: UTF-8 without BOM, Windows CRLF (`\r\n`) line endings, and relative forward-slash paths with no leading `/` or `./`.
-- **Optional Playlist Folder Duplication (SNOWSKY Mode):**
-  - For RTOS DAPs that do not reliably parse `.m3u` files, **SNOWSKY Mode** duplicates each playlist's tracks into dedicated root-level folders on the SD card prefixed with their 1-based playback index (`001 - {filename}`), auto-enabling for `SNOWSKY` volumes with manual override support.
+- **DRM-Free Library Curation:**
+  - Recursively scans your macOS Music source directory and copies validated, DRM-free audio (`.mp3`, `.m4a`, `.flac`, `.alac`, `.wav`, `.aiff`, `.aac`) into a single flat master vault (`~/Music/AudiophileVault/`) using Full Archive Standard naming: `{Artist} - {Album} - {DiscTrack} - {Title}.{ext}`.
+  - Enforces strict DRM-free filtering: rejects `.m4p`, `.wma`, `.aa`, and `.aax`; inspects MP4/M4A containers for FairPlay `drms`/`sinf` atoms; verifies `AVURLAsset.hasProtectedContent == false`; and deduplicates via SHA-256 + normalized metadata keys.
+- **Scored Multi-Provider Artwork Engine & Manual Override:**
+  - Artist-anchored lookup waterfall (**iTunes Search API -> Deezer -> MusicBrainz Cover Art Archive**) with canonical normalization, mandatory artist similarity gating (`>= 0.80`), tribute/karaoke penalties, and a `>= 0.75` confidence threshold.
+  - Interactive Artwork Inspector modal with drag-and-drop, native `NSOpenPanel` file browsing, online re-download, and in-process per-track, per-disc, or album-wide cover embedding/stripping (no external `ffmpeg` or `metaflac` binaries).
+- **Dual Sync Targets (Removable SD Card + Wireless Bonjour FTP):**
+  - **Removable SD Card:** Incremental `/usr/bin/rsync` synchronization to mounted `/Volumes/` targets, optional **SNOWSKY Mode** numbered playlist folder duplication (`001 - {filename}`), and safe native `NSWorkspace` volume ejection.
+  - **Wi-Fi FTP (`Bonjour` Auto-Discovery):** Zero-config `_ftp._tcp.local.` Bonjour discovery (e.g. `WiFiFTP`), interactive remote folder browser with atomic write-permission verification (`STOR`/`DELE` probe), size-only delta sync (Android 13 SAF compatible), and safe playlist updates (`DELE` before `STOR`).
+- **Universal DAP Playlist Builder:**
+  - Create, rename, duplicate, and reorder playlists with drag-and-drop; exports universal `.m3u` playlists (UTF-8 without BOM, Windows CRLF `\r\n` line endings, relative forward-slash paths) compatible with Android players (Poweramp, HiBy Music) and embedded RTOS players (Snowsky Echo Nano).
+- **Integrated Playback & Native macOS UI:**
+  - HTTP `206 Partial Content` byte-range audio streaming via `WKURLSchemeHandler` (`av://localhost`), decoupled `queueSource` with **Jump to Now Playing**, locked cover art column with drag-resizable text columns, native transparent titlebar window dragging, and GPU cross-faded Light/Dark themes.
 
 ---
 
 ## Architecture & Context Reference
 
-Audiophile Vault ships as a lightweight (~5.3 MB) native macOS `.app` bundle combining a Swift `WKWebView` host with a React frontend:
+- **`macos-swift/`** — Native Swift 5.9 macOS host (`AppDelegate`, `MainWindowController`, `WebViewController`, `VaultSchemeHandler`, `BonjourFtpBrowser`, `LibraryService`, `ArtworkAndTagService`, `PlaylistService`, `VolumeAndSyncService`).
+- **`client/`** — React 18, Vite 5, Tailwind CSS 3, and TanStack Table 8 frontend compiled into `client/dist/`.
+- **`scripts/build-swift-app.sh`** — Production build script packaging `dist/Audiophile Vault.app`.
 
-- **`macos-swift/`** — Native Swift 5.9 macOS host (`AppKit`, `WebKit`, `AVFoundation`, `ImageIO`, `CryptoKit`) providing custom URL scheme asset/cover/audio serving (`VaultSchemeHandler`), RPC/SSE bridging (`avBridge` / `SSEEventBus`), container tag/artwork embedding (`ArtworkAndTagService`), DRM-free ingestion (`LibraryService`), `.m3u` generation (`PlaylistService`), and `/usr/bin/rsync` SD sync (`VolumeAndSyncService`).
-- **`client/`** — React 18, Vite 5, Tailwind CSS 3, and TanStack Table 8 frontend compiled into `client/dist/` and embedded inside the `.app` bundle.
-- **`scripts/`** — Packaging and icon build automation (`scripts/build-swift-app.sh`).
-
-For complete architectural details, `.vault_index.json` schemas, API contracts, collation rules, and DAP playlist specifications, see **[AUDIOPHILE_VAULT_CONTEXT.md](./AUDIOPHILE_VAULT_CONTEXT.md)** (also available as [AUDIOPHILE_VAULT_CONTEXT.pdf](./AUDIOPHILE_VAULT_CONTEXT.pdf)).
+For full schemas, API contracts, collation rules, and system design details, see **[AUDIOPHILE_VAULT_CONTEXT.md](./AUDIOPHILE_VAULT_CONTEXT.md)**.
 
 ---
 
-## Local Build & Execution
+## Build, Run & Package Instructions
 
 ### Prerequisites
 
@@ -56,32 +48,27 @@ For complete architectural details, `.vault_index.json` schemas, API contracts, 
 npm install
 ```
 
-### 2. Run Frontend in Development (Optional)
+### 2. Build the Native macOS `.app` Bundle
 
-To iterate on the React/Tailwind UI with Vite HMR alongside the local dev server:
+Compile `client/dist/`, build the Release Swift binary, and package & sign `dist/Audiophile Vault.app`:
 
 ```bash
-npm run dev
+./scripts/build-swift-app.sh
 ```
 
-### 3. Build the Native macOS `.app` Bundle
+### 3. Install & Run
 
-Compile the React frontend (`client/dist/`), build the Release Swift binary (`macos-swift/`), and package & ad-hoc sign `dist/Audiophile Vault.app`:
+Copy the built bundle to `/Applications` and launch it:
 
 ```bash
-npm run build:app
-# or directly:
-bash scripts/build-swift-app.sh
+rm -rf "/Applications/Audiophile Vault.app"
+cp -R "dist/Audiophile Vault.app" "/Applications/Audiophile Vault.app"
+open -a "/Applications/Audiophile Vault.app"
 ```
 
-The standalone bundle is written to `dist/Audiophile Vault.app`. You can install it to `/Applications` or launch it directly:
+### 4. Verify Version & Self-Test
 
 ```bash
-open "dist/Audiophile Vault.app"
-```
-
-### 4. Run Native Self-Test Diagnostics
-
-```bash
-"dist/Audiophile Vault.app/Contents/MacOS/Audiophile Vault" --self-test
+defaults read "/Applications/Audiophile Vault.app/Contents/Info.plist" CFBundleShortVersionString
+"/Applications/Audiophile Vault.app/Contents/MacOS/Audiophile Vault" --self-test
 ```

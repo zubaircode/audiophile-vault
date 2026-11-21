@@ -57,6 +57,9 @@ const UnifiedControlBar = memo(function UnifiedControlBar({
   onJumpToNowPlaying,
   volumes = [],
   selectedVolumePath = '',
+  syncTargetMode = 'sd',
+  ftpServiceName = 'WiFiFTP',
+  ftpManualHost = '',
   onStartIngest,
   onStartSync,
   onEjectVolume,
@@ -93,6 +96,9 @@ const UnifiedControlBar = memo(function UnifiedControlBar({
 
   const selectedVol = volumes.find((v) => v.path === selectedVolumePath) || null;
   const isMounted = Boolean(selectedVol);
+  const isFtpMode = syncTargetMode === 'ftp';
+  const ftpDisplayLabel = ftpManualHost?.trim() || ftpServiceName || 'WiFiFTP';
+  const canSync = isFtpMode ? true : isMounted;
   const busy = isIngesting || isSyncing || isEjecting;
 
   const currentNumber = queueIndex >= 0 ? queueIndex + 1 : 0;
@@ -392,18 +398,20 @@ const UnifiedControlBar = memo(function UnifiedControlBar({
               )}
             </button>
 
-            {/* 2. Sync to SD Card Button */}
+            {/* 2. Sync to Target Button (SD Card or Wi-Fi FTP) */}
             <button
               type="button"
               onClick={onStartSync}
-              disabled={!isMounted || busy}
+              disabled={!canSync || busy}
               title={
-                isMounted
+                isFtpMode
+                  ? `Sync via Wi-Fi FTP (${ftpDisplayLabel})`
+                  : isMounted
                   ? `Sync to SD Card (${selectedVol.name})`
                   : 'Sync to SD Card'
               }
               className="h-14 w-14 rounded-lg bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 hover:border-amber-500/50 hover:bg-amber-500/10 text-zinc-700 dark:text-zinc-300 hover:text-amber-600 dark:hover:text-amber-400 flex items-center justify-center transition-colors shadow-xs dark:shadow-sm disabled:opacity-40 disabled:cursor-not-allowed shrink-0 cursor-pointer"
-              aria-label="Sync to SD Card"
+              aria-label={isFtpMode ? 'Sync via Wi-Fi FTP' : 'Sync to SD Card'}
             >
               {isSyncing ? (
                 <Loader2 className="w-5 h-5 animate-spin text-amber-500 dark:text-amber-400" />
@@ -416,9 +424,11 @@ const UnifiedControlBar = memo(function UnifiedControlBar({
             <button
               type="button"
               onClick={onEjectVolume}
-              disabled={!isMounted || busy}
+              disabled={isFtpMode || !isMounted || busy}
               title={
-                isMounted
+                isFtpMode
+                  ? 'Not applicable for Wi-Fi FTP target'
+                  : isMounted
                   ? `Eject SD Card (${selectedVol.name})`
                   : 'Eject SD Card'
               }

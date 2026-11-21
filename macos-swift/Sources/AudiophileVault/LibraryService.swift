@@ -28,17 +28,38 @@ public struct VaultConfig: Codable, Sendable {
     public var vaultPath: String
     public var sdCardPath: String
     public var exportPlaylistFolders: Bool
+    public var syncTargetMode: String
+    public var ftpServiceName: String
+    public var ftpManualHost: String
+    public var ftpManualPort: Int
+    public var ftpUsername: String
+    public var ftpPassword: String
+    public var ftpRemotePath: String
 
     public init(
         sourcePath: String,
         vaultPath: String,
         sdCardPath: String = "",
-        exportPlaylistFolders: Bool = false
+        exportPlaylistFolders: Bool = false,
+        syncTargetMode: String = "sd",
+        ftpServiceName: String = "WiFiFTP",
+        ftpManualHost: String = "",
+        ftpManualPort: Int = 2121,
+        ftpUsername: String = "",
+        ftpPassword: String = "",
+        ftpRemotePath: String = "/"
     ) {
         self.sourcePath = sourcePath
         self.vaultPath = vaultPath
         self.sdCardPath = sdCardPath
         self.exportPlaylistFolders = exportPlaylistFolders
+        self.syncTargetMode = syncTargetMode
+        self.ftpServiceName = ftpServiceName
+        self.ftpManualHost = ftpManualHost
+        self.ftpManualPort = ftpManualPort
+        self.ftpUsername = ftpUsername
+        self.ftpPassword = ftpPassword
+        self.ftpRemotePath = ftpRemotePath
     }
 
     enum CodingKeys: String, CodingKey {
@@ -46,6 +67,13 @@ public struct VaultConfig: Codable, Sendable {
         case vaultPath
         case sdCardPath
         case exportPlaylistFolders
+        case syncTargetMode
+        case ftpServiceName
+        case ftpManualHost
+        case ftpManualPort
+        case ftpUsername
+        case ftpPassword
+        case ftpRemotePath
     }
 
     public init(from decoder: Decoder) throws {
@@ -62,6 +90,16 @@ public struct VaultConfig: Codable, Sendable {
         } else {
             self.exportPlaylistFolders = LibraryService.isSnowskyVolumePath(sd)
         }
+        let mode = (try? c.decode(String.self, forKey: .syncTargetMode)) ?? "sd"
+        self.syncTargetMode = (mode == "ftp") ? "ftp" : "sd"
+        self.ftpServiceName = (try? c.decode(String.self, forKey: .ftpServiceName)) ?? "WiFiFTP"
+        self.ftpManualHost = (try? c.decode(String.self, forKey: .ftpManualHost)) ?? ""
+        let port = (try? c.decode(Int.self, forKey: .ftpManualPort)) ?? 2121
+        self.ftpManualPort = port > 0 ? port : 2121
+        self.ftpUsername = (try? c.decode(String.self, forKey: .ftpUsername)) ?? ""
+        self.ftpPassword = (try? c.decode(String.self, forKey: .ftpPassword)) ?? ""
+        let rPath = (try? c.decode(String.self, forKey: .ftpRemotePath)) ?? "/"
+        self.ftpRemotePath = rPath.isEmpty ? "/" : rPath
     }
 }
 
@@ -722,6 +760,13 @@ public final class LibraryService: @unchecked Sendable {
             "sdCardPath": config.sdCardPath,
             "targetPath": config.sdCardPath,
             "exportPlaylistFolders": config.exportPlaylistFolders,
+            "syncTargetMode": config.syncTargetMode,
+            "ftpServiceName": config.ftpServiceName,
+            "ftpManualHost": config.ftpManualHost,
+            "ftpManualPort": config.ftpManualPort,
+            "ftpUsername": config.ftpUsername,
+            "ftpPassword": config.ftpPassword,
+            "ftpRemotePath": config.ftpRemotePath,
             "registryPath": getVaultIndexPath(),
             "stats": [
                 "totalTracks": totalTracks,
@@ -766,6 +811,31 @@ public final class LibraryService: @unchecked Sendable {
 
         if let exp = partial["exportPlaylistFolders"] as? Bool {
             config.exportPlaylistFolders = exp
+        }
+
+        if let mode = partial["syncTargetMode"] as? String {
+            config.syncTargetMode = (mode == "ftp") ? "ftp" : "sd"
+        }
+        if let svc = partial["ftpServiceName"] as? String {
+            config.ftpServiceName = svc.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        if let host = partial["ftpManualHost"] as? String {
+            config.ftpManualHost = host.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        if let port = partial["ftpManualPort"] as? Int, port > 0 {
+            config.ftpManualPort = port
+        } else if let portStr = partial["ftpManualPort"] as? String, let port = Int(portStr.trimmingCharacters(in: .whitespacesAndNewlines)), port > 0 {
+            config.ftpManualPort = port
+        }
+        if let user = partial["ftpUsername"] as? String {
+            config.ftpUsername = user.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        if let pass = partial["ftpPassword"] as? String {
+            config.ftpPassword = pass
+        }
+        if let rPath = partial["ftpRemotePath"] as? String {
+            let trimmed = rPath.trimmingCharacters(in: .whitespacesAndNewlines)
+            config.ftpRemotePath = trimmed.isEmpty ? "/" : trimmed
         }
 
         persist()

@@ -123,6 +123,17 @@ public final class WebViewController: NSViewController, WKScriptMessageHandlerWi
         LibraryService.shared.initializeIfNeeded()
         PlaylistService.shared.syncAllPlaylistsM3u()
 
+        BonjourFtpBrowser.shared.setOnServicesChanged { [weak self] services in
+            guard let data = try? JSONSerialization.data(withJSONObject: services),
+                  let jsonStr = String(data: data, encoding: .utf8) else {
+                return
+            }
+            DispatchQueue.main.async {
+                self?.webView?.evaluateJavaScript("window.__avNotifyFtpServices && window.__avNotifyFtpServices(\(jsonStr));", completionHandler: nil)
+            }
+        }
+        BonjourFtpBrowser.shared.startBrowsing()
+
         if let indexUrl = URL(string: "av://localhost/index.html") {
             webView.load(URLRequest(url: indexUrl))
         }
@@ -499,11 +510,85 @@ public final class WebViewController: NSViewController, WKScriptMessageHandlerWi
                 ]
             }
 
+            // 7b. /api/ftp/services & /api/ftp/test
+            if path == "/api/ftp/services" && method == "GET" {
+                return ["status": 200, "body": ["services": BonjourFtpBrowser.shared.listServicesDicts()]]
+            }
+
+            if path == "/api/ftp/test" && method == "POST" {
+                let svcName = body?["ftpServiceName"] as? String
+                let mHost = body?["ftpManualHost"] as? String
+                let mPort: Int? = (body?["ftpManualPort"] as? Int) ?? (body?["ftpManualPort"] as? String).flatMap(Int.init)
+                let user = body?["ftpUsername"] as? String
+                let pass = body?["ftpPassword"] as? String
+                let rPath = body?["ftpRemotePath"] as? String
+                let res = try volService.testFtpConnection(
+                    serviceName: svcName,
+                    manualHost: mHost,
+                    manualPort: mPort,
+                    username: user,
+                    password: pass,
+                    remotePath: rPath
+                )
+                return ["status": 200, "body": res]
+            }
+
+            if path == "/api/ftp/list" && method == "POST" {
+                let reqPath = (body?["path"] as? String) ?? "/"
+                let svcName = body?["ftpServiceName"] as? String
+                let mHost = body?["ftpManualHost"] as? String
+                let mPort: Int? = (body?["ftpManualPort"] as? Int) ?? (body?["ftpManualPort"] as? String).flatMap(Int.init)
+                let user = body?["ftpUsername"] as? String
+                let pass = body?["ftpPassword"] as? String
+                let res = try volService.ftpListDirectory(
+                    path: reqPath,
+                    serviceName: svcName,
+                    manualHost: mHost,
+                    manualPort: mPort,
+                    username: user,
+                    password: pass
+                )
+                return ["status": 200, "body": res]
+            }
+
+            if path == "/api/ftp/verify-writable" && method == "POST" {
+                let reqPath = (body?["path"] as? String) ?? "/"
+                let svcName = body?["ftpServiceName"] as? String
+                let mHost = body?["ftpManualHost"] as? String
+                let mPort: Int? = (body?["ftpManualPort"] as? Int) ?? (body?["ftpManualPort"] as? String).flatMap(Int.init)
+                let user = body?["ftpUsername"] as? String
+                let pass = body?["ftpPassword"] as? String
+                let res = volService.ftpVerifyWritable(
+                    path: reqPath,
+                    serviceName: svcName,
+                    manualHost: mHost,
+                    manualPort: mPort,
+                    username: user,
+                    password: pass
+                )
+                return ["status": 200, "body": res]
+            }
+
             // 8. /api/sync
             if path == "/api/sync" && method == "POST" {
                 if volService.getIsSyncing() {
-                    return ["status": 409, "body": ["error": "Rsync is already running."]]
+                    return ["status": 409, "body": ["error": "Sync is already running."]]
                 }
+                let mode = (body?["syncTargetMode"] as? String) ?? lib.config.syncTargetMode
+                if mode == "ftp" {
+                    Task.detached {
+                        try? await VolumeAndSyncService.shared.runFtpSync()
+                    }
+                    return [
+                        "status": 202,
+                        "body": [
+                            "started": true,
+                            "mode": "ftp",
+                            "message": "Wi-Fi FTP sync started."
+                        ]
+                    ]
+                }
+
                 let volumePath = (body?["volumePath"] as? String) ?? lib.config.sdCardPath
                 if volumePath.isEmpty {
                     return ["status": 400, "body": ["error": "Please select a target SD card volume first."]]
@@ -517,6 +602,7 @@ public final class WebViewController: NSViewController, WKScriptMessageHandlerWi
                     "status": 202,
                     "body": [
                         "started": true,
+                        "mode": "sd",
                         "volumePath": volumePath,
                         "targetPath": targetMusicDir,
                         "message": "Rsync started targeting \(targetMusicDir)."
@@ -526,6 +612,9 @@ public final class WebViewController: NSViewController, WKScriptMessageHandlerWi
 
             // 9. /api/eject
             if path == "/api/eject" && method == "POST" {
+                if lib.config.syncTargetMode == "ftp" {
+                    return ["status": 400, "body": ["error": "Not applicable for Wi-Fi FTP target."]]
+                }
                 let volumePath = (body?["volumePath"] as? String) ?? lib.config.sdCardPath
                 if volumePath.isEmpty {
                     return ["status": 400, "body": ["error": "No volume specified to eject."]]

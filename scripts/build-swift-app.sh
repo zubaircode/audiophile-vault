@@ -80,9 +80,9 @@ cat > "${APP_BUNDLE}/Contents/Info.plist" << 'EOF'
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>2.0.0</string>
+  <string>2.1.0</string>
   <key>CFBundleVersion</key>
-  <string>2.0.0</string>
+  <string>2.1.0</string>
   <key>LSMinimumSystemVersion</key>
   <string>14.0</string>
   <key>NSHighResolutionCapable</key>
@@ -93,6 +93,12 @@ cat > "${APP_BUNDLE}/Contents/Info.plist" << 'EOF'
   <string>Audiophile Vault needs access to your Music library to index, organize, and export your lossless audio tracks and playlists.</string>
   <key>NSRemovableVolumesUsageDescription</key>
   <string>Audiophile Vault needs access to removable SD cards and USB volumes to synchronize your music library and universal playlists.</string>
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>Audiophile Vault uses Bonjour on your local network to automatically discover your player's Wi-Fi FTP server for wireless music syncing.</string>
+  <key>NSBonjourServices</key>
+  <array>
+    <string>_ftp._tcp</string>
+  </array>
   <key>NSAppTransportSecurity</key>
   <dict>
     <key>NSAllowsArbitraryLoads</key>
