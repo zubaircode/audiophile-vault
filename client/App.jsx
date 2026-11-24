@@ -229,25 +229,31 @@ function AppContent() {
       });
 
       if (list.length > 0) {
-        const currentSelected = selectedVolumePathRef.current;
-        const stillMounted = list.some(
+        const currentSelected = selectedVolumePathRef.current || '';
+        const matchedVol = list.find(
           (v) => v.path === currentSelected || currentSelected.startsWith(`${v.path}/`)
         );
-        const nextPath = stillMounted ? currentSelected : list[0].path;
-        if (nextPath !== currentSelected) {
-          setSelectedVolumePath(nextPath);
-          fetch(`${API_BASE}/api/config`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ sdCardPath: nextPath }),
-          })
-            .then((r) => (r.ok ? r.json() : null))
-            .then((updated) => {
-              if (updated) {
-                setConfig((prev) => ({ ...prev, ...updated }));
-              }
+        if (matchedVol) {
+          if (matchedVol.path !== currentSelected) {
+            setSelectedVolumePath(matchedVol.path);
+          }
+        } else {
+          const nextPath = list[0].path;
+          if (nextPath !== currentSelected) {
+            setSelectedVolumePath(nextPath);
+            fetch(`${API_BASE}/api/config`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ sdCardPath: nextPath }),
             })
-            .catch(() => {});
+              .then((r) => (r.ok ? r.json() : null))
+              .then((updated) => {
+                if (updated) {
+                  setConfig((prev) => ({ ...prev, ...updated }));
+                }
+              })
+              .catch(() => {});
+          }
         }
       } else {
         setSelectedVolumePath((prev) => (prev === '' ? prev : ''));
@@ -1114,8 +1120,16 @@ function AppContent() {
       if (res.ok) {
         const updated = await res.json();
         setConfig((prev) => ({ ...prev, ...updated }));
-        if (cleanedPayload.sdCardPath && cleanedPayload.sdCardPath !== selectedVolumePath) {
-          setSelectedVolumePath(cleanedPayload.sdCardPath);
+        if (cleanedPayload.sdCardPath) {
+          const matchedVol = volumes.find(
+            (v) =>
+              v.path === cleanedPayload.sdCardPath ||
+              cleanedPayload.sdCardPath.startsWith(`${v.path}/`)
+          );
+          const nextVolPath = matchedVol ? matchedVol.path : cleanedPayload.sdCardPath;
+          if (nextVolPath !== selectedVolumePath) {
+            setSelectedVolumePath(nextVolPath);
+          }
         }
         appendLog({
           type: 'DONE',

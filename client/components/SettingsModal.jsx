@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   FolderOpen,
   Folder,
@@ -45,8 +45,10 @@ export default function SettingsModal({
   const [verifyingWritable, setVerifyingWritable] = useState(false);
   const [writableStatus, setWritableStatus] = useState(null);
 
+  const wasOpenRef = useRef(false);
+
   useEffect(() => {
-    if (isOpen) {
+    if (isOpen && !wasOpenRef.current) {
       setSourcePath(config.sourcePath || '');
       setVaultPath(config.vaultPath || '');
       setTargetPath(config.sdCardPath || selectedVolumePath || '');
@@ -61,6 +63,7 @@ export default function SettingsModal({
       setFtpBrowserData(null);
       setWritableStatus(null);
     }
+    wasOpenRef.current = isOpen;
   }, [isOpen, config, selectedVolumePath]);
 
   if (!isOpen) return null;
@@ -273,18 +276,30 @@ export default function SettingsModal({
                   <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300 mb-1.5">
                     Mounted Volume
                   </label>
-                  <select
-                    value={selectedVolumePath}
-                    onChange={(e) => handleVolumeChange(e.target.value)}
-                    className="w-full bg-white dark:bg-zinc-900 border border-zinc-300 dark:border-zinc-700 rounded-lg px-3.5 py-2 text-sm text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-amber-500 dark:focus:border-amber-500"
-                  >
-                    <option value="">— Select Mounted Volume in /Volumes —</option>
-                    {volumes.map((vol) => (
-                      <option key={vol.path} value={vol.path}>
-                        {vol.name} ({formatBytes(vol.freeSpace)} free / {formatBytes(vol.totalSpace)})
-                      </option>
-                    ))}
-                  </select>
+                  {(() => {
+                    const matchedVol = volumes.find(
+                      (v) =>
+                        v.path === selectedVolumePath ||
+                        selectedVolumePath.startsWith(`${v.path}/`) ||
+                        v.path === targetPath ||
+                        targetPath.startsWith(`${v.path}/`)
+                    );
+                    const selectValue = matchedVol ? matchedVol.path : '';
+                    return (
+                      <select
+                        value={selectValue}
+                        onChange={(e) => handleVolumeChange(e.target.value)}
+                        className="w-full bg-white dark:bg-zinc-900 border border-zinc-300 dark:border-zinc-700 rounded-lg px-3.5 py-2 text-sm text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-amber-500 dark:focus:border-amber-500"
+                      >
+                        <option value="">— Select Mounted Volume in /Volumes —</option>
+                        {volumes.map((vol) => (
+                          <option key={vol.path} value={vol.path}>
+                            {vol.name} ({formatBytes(vol.freeSpace)} free / {formatBytes(vol.totalSpace)})
+                          </option>
+                        ))}
+                      </select>
+                    );
+                  })()}
                   <p className="text-[11px] text-zinc-500 mt-1">
                     Works with any removable microSD card, external drive, or target audio directory.
                   </p>

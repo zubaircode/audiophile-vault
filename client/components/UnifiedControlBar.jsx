@@ -94,7 +94,10 @@ const UnifiedControlBar = memo(function UnifiedControlBar({
     setHasArtworkError(false);
   }, [currentTrack?.baseName, currentTrack?.artworkUpdatedAt]);
 
-  const selectedVol = volumes.find((v) => v.path === selectedVolumePath) || null;
+  const selectedVol =
+    volumes.find(
+      (v) => v.path === selectedVolumePath || selectedVolumePath.startsWith(`${v.path}/`)
+    ) || null;
   const isMounted = Boolean(selectedVol);
   const isFtpMode = syncTargetMode === 'ftp';
   const ftpDisplayLabel = ftpManualHost?.trim() || ftpServiceName || 'WiFiFTP';

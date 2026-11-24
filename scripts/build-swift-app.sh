@@ -80,9 +80,9 @@ cat > "${APP_BUNDLE}/Contents/Info.plist" << 'EOF'
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>2.1.0</string>
+  <string>2.1.1</string>
   <key>CFBundleVersion</key>
-  <string>2.1.0</string>
+  <string>2.1.1</string>
   <key>LSMinimumSystemVersion</key>
   <string>14.0</string>
   <key>NSHighResolutionCapable</key>
