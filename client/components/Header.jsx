@@ -316,11 +316,11 @@ const Header = memo(function Header({
             title={
               isSyncing
                 ? 'Unavailable while sync is in progress'
-                : `Snowsky Mode: Export Playlists as Root Folders (Auto-enabled for SNOWSKY drives) — ${
+                : `Snowsky Mode: Folder-per-playlist mode (copies tracks into Library/ and Playlist subfolders without .m3u files) — ${
                     exportPlaylistFolders ? 'Active' : 'Inactive'
                   }`
             }
-            aria-label="Snowsky Mode: Export Playlists as Root Folders (Auto-enabled for SNOWSKY drives)"
+            aria-label="Snowsky Mode: Folder-per-playlist mode (copies tracks into Library/ and Playlist subfolders without .m3u files)"
             className={`h-14 w-14 rounded-lg flex items-center justify-center transition-colors shadow-xs dark:shadow-none shrink-0 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer ${
               exportPlaylistFolders
                 ? 'bg-sky-500/15 border border-sky-500/50 text-sky-600 dark:text-sky-400 hover:bg-sky-500/25'

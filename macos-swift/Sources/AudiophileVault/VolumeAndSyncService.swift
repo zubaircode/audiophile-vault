@@ -283,7 +283,7 @@ public final class VolumeAndSyncService: @unchecked Sendable {
         return nil
     }
 
-    // MARK: - SNOWSKY Mode Playlist Folder Export
+    // MARK: - SNOWSKY Mode Folder Export & Shared Plan
     private func isProtectedFolder(_ name: String) -> Bool {
         let lower = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if lower.isEmpty || lower == "." || lower == ".." || lower.contains("/") || lower.contains("\\") {
@@ -292,127 +292,276 @@ public final class VolumeAndSyncService: @unchecked Sendable {
         return Self.protectedRootFolders.contains(lower)
     }
 
-    private func sanitizeFolderName(_ name: String, fallback: String = "Playlist") -> String {
+    private func sanitizeSnowskyFolderName(_ name: String, fallback: String = "Playlist") -> String {
         let sanitized = name.replacingOccurrences(of: #"[/\\:*?"<>|\x00-\x1f]"#, with: "", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .replacingOccurrences(of: #"\.+$"#, with: "", options: .regularExpression)
         if sanitized.isEmpty { return fallback }
-        if sanitized.lowercased() == "music" { return "Music (Playlist)" }
+        let lower = sanitized.lowercased()
+        if lower == "music" || lower == "library" {
+            return "\(sanitized) (Playlist)"
+        }
         return sanitized
     }
 
-    private func syncPlaylistFolders(sdRoot: String, vaultDir: String, exportPlaylistFolders: Bool) {
-        let fm = FileManager.default
-        if sdRoot.isEmpty || !fm.fileExists(atPath: sdRoot) { return }
-        let manifestPath = (sdRoot as NSString).appendingPathComponent(Self.manifestFilename)
+    private struct SnowskyTrackItem {
+        let filename: String
+        let srcPath: String
+        let size: Int64
+        let mtime: TimeInterval
+    }
 
-        var previousFolders: [String] = []
-        if fm.fileExists(atPath: manifestPath),
-           let data = try? Data(contentsOf: URL(fileURLWithPath: manifestPath)),
-           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let folders = json["folders"] as? [String] {
-            previousFolders = folders
+    private struct SnowskyPlaylistPlan {
+        let rawName: String
+        let folderName: String
+        let tracks: [SnowskyTrackItem]
+    }
+
+    private struct SnowskySyncPlan {
+        let libraryTracks: [SnowskyTrackItem]
+        let playlists: [SnowskyPlaylistPlan]
+        var totalOperations: Int {
+            libraryTracks.count + playlists.reduce(0) { $0 + $1.tracks.count }
         }
+    }
 
-        if !exportPlaylistFolders {
-            if !previousFolders.isEmpty {
-                for folder in previousFolders {
-                    if isProtectedFolder(folder) { continue }
-                    let folderPath = (sdRoot as NSString).appendingPathComponent(folder)
-                    var isDir: ObjCBool = false
-                    if fm.fileExists(atPath: folderPath, isDirectory: &isDir), isDir.boolValue {
-                        try? fm.removeItem(atPath: folderPath)
-                        emitSyncEvent(type: "PLAYLIST", message: "[PLAYLIST FOLDER] Removed playlist folder (SNOWSKY disabled): /\(folder)/")
-                    }
-                }
-                try? fm.removeItem(atPath: manifestPath)
-                emitSyncEvent(type: "PLAYLIST", message: "[PLAYLIST FOLDER] Cleaned up SNOWSKY playlist folders from SD card.")
-            }
-            return
+    private func buildSnowskyPlan(vaultDir: String) -> SnowskySyncPlan {
+        let fm = FileManager.default
+        let names = (try? fm.contentsOfDirectory(atPath: vaultDir)) ?? []
+        var libraryTracks: [SnowskyTrackItem] = []
+
+        for name in names.sorted() {
+            if name.hasPrefix(".") || name == ".vault_index.json" { continue }
+            let fullPath = (vaultDir as NSString).appendingPathComponent(name)
+            var isDir: ObjCBool = false
+            guard fm.fileExists(atPath: fullPath, isDirectory: &isDir), !isDir.boolValue else { continue }
+            let ext = "." + (name as NSString).pathExtension.lowercased()
+            guard LibraryService.supportedExtensions.contains(ext) else { continue }
+            let attrs = try? fm.attributesOfItem(atPath: fullPath)
+            let size = (attrs?[.size] as? NSNumber)?.int64Value ?? 0
+            let mtime = (attrs?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+            libraryTracks.append(SnowskyTrackItem(filename: name, srcPath: fullPath, size: size, mtime: mtime))
         }
 
         let playlists = PlaylistService.shared.listPlaylists().playlists
         let lib = LibraryService.shared
-        var currentFolders: [String] = []
-        var usedLower = Set<String>()
+        var playlistPlans: [SnowskyPlaylistPlan] = []
+        var usedLower = Set<String>(["library"])
 
         for playlist in playlists {
             let rawName = playlist.name.isEmpty ? "Playlist" : playlist.name
-            let folderName = sanitizeFolderName(rawName)
-            var uniqueName = folderName
+            let baseFolder = sanitizeSnowskyFolderName(rawName)
+            var uniqueName = baseFolder
             var counter = 2
             while usedLower.contains(uniqueName.lowercased()) {
-                uniqueName = "\(folderName)_\(counter)"
+                uniqueName = "\(baseFolder)_\(counter)"
                 counter += 1
             }
             usedLower.insert(uniqueName.lowercased())
-            currentFolders.append(uniqueName)
 
-            let playlistDir = (sdRoot as NSString).appendingPathComponent(uniqueName)
-            try? fm.createDirectory(atPath: playlistDir, withIntermediateDirectories: true)
-
-            let trackKeys = playlist.trackKeys
-            emitSyncEvent(type: "PLAYLIST", message: "[PLAYLIST FOLDER] Syncing \"\(rawName)\" (\(trackKeys.count) tracks) -> /\(uniqueName)/")
-
-            var expectedFilenames = Set<String>()
-            var tracksToCopy: [(filename: String, srcPath: String, destPath: String)] = []
-            let padLen = trackKeys.count >= 100 ? 3 : 2
-
-            for (idx, key) in trackKeys.enumerated() {
+            var items: [SnowskyTrackItem] = []
+            var seenFilenames = Set<String>()
+            for key in playlist.trackKeys {
                 guard let track = lib.getTrackByKey(key), !track.filename.isEmpty else { continue }
-                let prefix = String(format: "%0*d", padLen, idx + 1)
-                let destFilename = "\(prefix) - \(track.filename)"
-                expectedFilenames.insert(destFilename)
-                tracksToCopy.append((
-                    track.filename,
-                    (vaultDir as NSString).appendingPathComponent(track.filename),
-                    (playlistDir as NSString).appendingPathComponent(destFilename)
-                ))
+                guard !seenFilenames.contains(track.filename) else { continue }
+                seenFilenames.insert(track.filename)
+                let srcPath = (vaultDir as NSString).appendingPathComponent(track.filename)
+                guard fm.fileExists(atPath: srcPath) else { continue }
+                let attrs = try? fm.attributesOfItem(atPath: srcPath)
+                let size = (attrs?[.size] as? NSNumber)?.int64Value ?? 0
+                let mtime = (attrs?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+                items.append(SnowskyTrackItem(filename: track.filename, srcPath: srcPath, size: size, mtime: mtime))
+            }
+            playlistPlans.append(SnowskyPlaylistPlan(rawName: rawName, folderName: uniqueName, tracks: items))
+        }
+
+        return SnowskySyncPlan(libraryTracks: libraryTracks, playlists: playlistPlans)
+    }
+
+    private func cleanupLegacyRootSnowskyFolders(sdRoot: String) {
+        let fm = FileManager.default
+        if sdRoot.isEmpty || !fm.fileExists(atPath: sdRoot) { return }
+        let manifestPath = (sdRoot as NSString).appendingPathComponent(Self.manifestFilename)
+        guard fm.fileExists(atPath: manifestPath),
+              let data = try? Data(contentsOf: URL(fileURLWithPath: manifestPath)),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let folders = json["folders"] as? [String] else {
+            return
+        }
+        for folder in folders {
+            if isProtectedFolder(folder) { continue }
+            let folderPath = (sdRoot as NSString).appendingPathComponent(folder)
+            var isDir: ObjCBool = false
+            if fm.fileExists(atPath: folderPath, isDirectory: &isDir), isDir.boolValue {
+                try? fm.removeItem(atPath: folderPath)
+                emitSyncEvent(type: "PLAYLIST", message: "[SNOWSKY SYNC] Removed legacy root playlist folder: /\(folder)/")
+            }
+        }
+        try? fm.removeItem(atPath: manifestPath)
+    }
+
+    private func syncLocalSnowskySubfolder(
+        destDir: String,
+        tracks: [SnowskyTrackItem],
+        processed: inout Int,
+        copied: inout Int,
+        unchanged: inout Int,
+        deleted: inout Int
+    ) {
+        let fm = FileManager.default
+        try? fm.createDirectory(atPath: destDir, withIntermediateDirectories: true)
+
+        let expectedFilenames = Set(tracks.map { $0.filename })
+        if let existing = try? fm.contentsOfDirectory(atPath: destDir) {
+            for entry in existing {
+                if getIsCancelRequested() { return }
+                if entry == ".DS_Store" {
+                    try? fm.removeItem(atPath: (destDir as NSString).appendingPathComponent(entry))
+                    continue
+                }
+                if !expectedFilenames.contains(entry) {
+                    let stalePath = (destDir as NSString).appendingPathComponent(entry)
+                    try? fm.removeItem(atPath: stalePath)
+                    deleted += 1
+                    emitSyncEvent(type: "RSYNC", message: "[SNOWSKY SYNC] Deleted stale: \(entry)")
+                }
+            }
+        }
+
+        for item in tracks {
+            if getIsCancelRequested() { return }
+            processed += 1
+            let destPath = (destDir as NSString).appendingPathComponent(item.filename)
+            updateSyncState { st in
+                st.currentFile = item.filename
+                st.processedCount = processed
             }
 
-            if let existing = try? fm.contentsOfDirectory(atPath: playlistDir) {
-                for entry in existing {
-                    if entry == ".DS_Store" || !expectedFilenames.contains(entry) {
-                        try? fm.removeItem(atPath: (playlistDir as NSString).appendingPathComponent(entry))
+            if let destAttrs = try? fm.attributesOfItem(atPath: destPath) {
+                let destSize = (destAttrs[.size] as? NSNumber)?.int64Value ?? -2
+                let destMtime = (destAttrs[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+                if item.size > 0 && destSize == item.size && abs(item.mtime - destMtime) <= 2.0 {
+                    unchanged += 1
+                    continue
+                }
+                try? fm.removeItem(atPath: destPath)
+            }
+
+            emitSyncEvent(type: "RSYNC", message: "[SNOWSKY SYNC] Copying: \(item.filename)")
+            do {
+                try fm.copyItem(atPath: item.srcPath, toPath: destPath)
+                copied += 1
+            } catch {
+                emitSyncEvent(type: "ERROR", message: "[SNOWSKY SYNC ERROR] Failed to copy \"\(item.filename)\": \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func runSnowskySdSync(targetMusicDir: String, vaultDir: String, startTime: Date) -> String {
+        let fm = FileManager.default
+        let plan = buildSnowskyPlan(vaultDir: vaultDir)
+        let totalOps = plan.totalOperations
+
+        updateSyncState { st in
+            st.phase = "syncing"
+            st.totalCount = totalOps
+            st.processedCount = 0
+        }
+
+        emitSyncEvent(type: "RSYNC", message: "[SNOWSKY SYNC] Starting SD Card sync -> \(targetMusicDir) (Library/ + Playlist subfolders, no .m3u files)")
+
+        var processed = 0
+        var copied = 0
+        var unchanged = 0
+        var deleted = 0
+
+        // 1. Sync Music/Library/ with all vault tracks
+        let libraryDir = (targetMusicDir as NSString).appendingPathComponent("Library")
+        emitSyncEvent(type: "RSYNC", message: "[SNOWSKY SYNC] Syncing Library (\(plan.libraryTracks.count) tracks) -> Music/Library/")
+        syncLocalSnowskySubfolder(
+            destDir: libraryDir,
+            tracks: plan.libraryTracks,
+            processed: &processed,
+            copied: &copied,
+            unchanged: &unchanged,
+            deleted: &deleted
+        )
+
+        // 2. Sync Music/<SanitizedPlaylistName>/ for each playlist
+        if !getIsCancelRequested() {
+            updateSyncState { st in
+                st.phase = "playlists"
+                st.currentFile = nil
+            }
+            for pl in plan.playlists {
+                if getIsCancelRequested() { break }
+                let plDir = (targetMusicDir as NSString).appendingPathComponent(pl.folderName)
+                emitSyncEvent(type: "PLAYLIST", message: "[SNOWSKY SYNC] Syncing Playlist \"\(pl.rawName)\" (\(pl.tracks.count) tracks) -> Music/\(pl.folderName)/")
+                syncLocalSnowskySubfolder(
+                    destDir: plDir,
+                    tracks: pl.tracks,
+                    processed: &processed,
+                    copied: &copied,
+                    unchanged: &unchanged,
+                    deleted: &deleted
+                )
+            }
+        }
+
+        // 3. Prune stale files/folders directly inside Music/ (e.g. old flat tracks, .m3u files, deleted playlists)
+        if !getIsCancelRequested() {
+            updateSyncState { st in
+                st.phase = "cleaning"
+                st.currentFile = nil
+            }
+            var validFoldersLower = Set<String>(["library"])
+            for pl in plan.playlists {
+                validFoldersLower.insert(pl.folderName.lowercased())
+            }
+            if let topEntries = try? fm.contentsOfDirectory(atPath: targetMusicDir) {
+                for entry in topEntries {
+                    if getIsCancelRequested() { break }
+                    if entry == ".DS_Store" {
+                        try? fm.removeItem(atPath: (targetMusicDir as NSString).appendingPathComponent(entry))
+                        continue
+                    }
+                    let fullPath = (targetMusicDir as NSString).appendingPathComponent(entry)
+                    var isDir: ObjCBool = false
+                    let exists = fm.fileExists(atPath: fullPath, isDirectory: &isDir)
+                    guard exists else { continue }
+                    if isDir.boolValue {
+                        if !validFoldersLower.contains(entry.lowercased()) {
+                            try? fm.removeItem(atPath: fullPath)
+                            deleted += 1
+                            emitSyncEvent(type: "PLAYLIST", message: "[SNOWSKY SYNC] Removed stale folder: Music/\(entry)/")
+                        }
+                    } else {
+                        try? fm.removeItem(atPath: fullPath)
+                        deleted += 1
+                        emitSyncEvent(type: "RSYNC", message: "[SNOWSKY SYNC] Removed flat/playlist file: Music/\(entry)")
                     }
                 }
             }
-
-            for item in tracksToCopy {
-                let srcSize = ((try? fm.attributesOfItem(atPath: item.srcPath))?[.size] as? NSNumber)?.int64Value ?? -1
-                let destSize = ((try? fm.attributesOfItem(atPath: item.destPath))?[.size] as? NSNumber)?.int64Value ?? -2
-                if srcSize > 0 && srcSize == destSize {
-                    continue
-                }
-                try? fm.removeItem(atPath: item.destPath)
-                do {
-                    try fm.copyItem(atPath: item.srcPath, toPath: item.destPath)
-                } catch {
-                    emitSyncEvent(type: "ERROR", message: "[PLAYLIST FOLDER ERROR] Failed to copy \"\(item.filename)\": \(error.localizedDescription)")
-                }
-            }
         }
 
-        let currentLower = Set(currentFolders.map { $0.lowercased() })
-        for prev in previousFolders where !currentLower.contains(prev.lowercased()) {
-            if isProtectedFolder(prev) { continue }
-            let stale = (sdRoot as NSString).appendingPathComponent(prev)
-            var isDir: ObjCBool = false
-            if fm.fileExists(atPath: stale, isDirectory: &isDir), isDir.boolValue {
-                try? fm.removeItem(atPath: stale)
-                emitSyncEvent(type: "PLAYLIST", message: "[PLAYLIST FOLDER] Removed orphaned playlist folder: /\(prev)/")
-            }
+        let trimmedMusic = targetMusicDir.replacingOccurrences(of: #"/+$"#, with: "", options: .regularExpression)
+        let sdRoot = (trimmedMusic as NSString).deletingLastPathComponent
+        cleanupLegacyRootSnowskyFolders(sdRoot: sdRoot)
+
+        let elapsed = String(format: "%.1f", Date().timeIntervalSince(startTime))
+        if getIsCancelRequested() {
+            emitSyncEvent(
+                type: "DONE",
+                message: "[SNOWSKY SYNC] Canceled cleanly by user after \(elapsed)s (\(copied) copied, \(unchanged) unchanged, \(deleted) removed before stop)."
+            )
+            return "canceled"
         }
 
-        let manifest: [String: Any] = [
-            "version": 1,
-            "generatedBy": "Audiophile Vault SNOWSKY Mode",
-            "generatedAt": ISO8601DateFormatter().string(from: Date()),
-            "folders": currentFolders
-        ]
-        if let data = try? JSONSerialization.data(withJSONObject: manifest, options: [.prettyPrinted]) {
-            try? data.write(to: URL(fileURLWithPath: manifestPath), options: .atomic)
-        }
+        emitSyncEvent(
+            type: "DONE",
+            message: "[SNOWSKY SYNC] Complete: \(copied) copied, \(unchanged) unchanged, \(deleted) removed across Library and \(plan.playlists.count) playlists in \(elapsed)s."
+        )
+        return "done"
     }
 
     // MARK: - Incremental Sync via /usr/bin/rsync
@@ -474,6 +623,15 @@ public final class VolumeAndSyncService: @unchecked Sendable {
 
         try? FileManager.default.createDirectory(atPath: normalizedVaultDir, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(atPath: targetMusicDir, withIntermediateDirectories: true)
+
+        if lib.config.exportPlaylistFolders {
+            finalPhase = runSnowskySdSync(
+                targetMusicDir: targetMusicDir,
+                vaultDir: normalizedVaultDir,
+                startTime: startTime
+            )
+            return
+        }
 
         PlaylistService.shared.syncAllPlaylistsM3u()
 
@@ -655,17 +813,9 @@ public final class VolumeAndSyncService: @unchecked Sendable {
         }
 
         if !getIsCancelRequested() {
-            updateSyncState { st in
-                st.phase = "playlists"
-                st.currentFile = nil
-            }
             let trimmedMusic = targetMusicDir.replacingOccurrences(of: #"/+$"#, with: "", options: .regularExpression)
             let sdRoot = (trimmedMusic as NSString).deletingLastPathComponent
-            syncPlaylistFolders(
-                sdRoot: sdRoot,
-                vaultDir: normalizedVaultDir,
-                exportPlaylistFolders: lib.config.exportPlaylistFolders
-            )
+            cleanupLegacyRootSnowskyFolders(sdRoot: sdRoot)
         }
 
         let counts = tracker.snapshot()
@@ -1129,6 +1279,18 @@ public final class VolumeAndSyncService: @unchecked Sendable {
 
         emitSyncEvent(type: "RSYNC", message: "[FTP SYNC] Connected to \(target.label) (\(target.host):\(target.port)\(rDirDisplay))")
 
+        if cfg.exportPlaylistFolders {
+            finalPhase = try runSnowskyFtpSync(
+                host: target.host,
+                port: target.port,
+                rDir: rDir,
+                vaultDir: vaultDir,
+                cfg: cfg,
+                startTime: startTime
+            )
+            return
+        }
+
         PlaylistService.shared.syncAllPlaylistsM3u()
 
         let remoteEntries: [FtpRemoteEntry]
@@ -1329,5 +1491,216 @@ public final class VolumeAndSyncService: @unchecked Sendable {
             type: "DONE",
             message: "[DONE] [FTP SYNC] Complete: \(uploaded) uploaded, \(skipped) unchanged, \(playlistsUpdated) playlists updated, \(removed) removed in \(elapsed)s"
         )
+    }
+
+    private func syncFtpSnowskySubfolder(
+        host: String,
+        port: Int,
+        remoteSubdir: String,
+        tracks: [SnowskyTrackItem],
+        cfg: VaultConfig,
+        totalOps: Int,
+        processed: inout Int,
+        uploaded: inout Int,
+        skipped: inout Int,
+        removed: inout Int
+    ) throws {
+        let existingEntries = (try? listFtpDirectory(
+            host: host,
+            port: port,
+            remoteDir: remoteSubdir,
+            username: cfg.ftpUsername,
+            password: cfg.ftpPassword
+        )) ?? []
+
+        var remoteByName: [String: FtpRemoteEntry] = [:]
+        for entry in existingEntries where !entry.isDirectory {
+            remoteByName[entry.name] = entry
+        }
+
+        let expectedFilenames = Set(tracks.map { $0.filename })
+
+        // Prune stale files in this remote subfolder
+        for entry in existingEntries where !entry.isDirectory {
+            if getIsCancelRequested() { return }
+            if !expectedFilenames.contains(entry.name) {
+                emitSyncEvent(type: "RSYNC", message: "[SNOWSKY SYNC] Deleting stale: \(entry.name)")
+                try? deleteFtpFile(
+                    host: host,
+                    port: port,
+                    remoteDir: remoteSubdir,
+                    filename: entry.name,
+                    username: cfg.ftpUsername,
+                    password: cfg.ftpPassword,
+                    ignoreMissing: true
+                )
+                removed += 1
+            }
+        }
+
+        for item in tracks {
+            if getIsCancelRequested() { return }
+            processed += 1
+
+            if let remote = remoteByName[item.filename], remote.size == item.size {
+                skipped += 1
+                updateSyncState { st in
+                    st.processedCount = processed
+                }
+                continue
+            }
+
+            updateSyncState { st in
+                st.currentFile = item.filename
+                st.processedCount = processed
+            }
+            emitSyncEvent(
+                type: "RSYNC",
+                message: "[SNOWSKY SYNC] Uploading (\(processed)/\(totalOps)): \(item.filename) (\(Self.formatByteCount(item.size)))"
+            )
+            do {
+                try uploadFtpFile(
+                    localPath: item.srcPath,
+                    host: host,
+                    port: port,
+                    remoteDir: remoteSubdir,
+                    filename: item.filename,
+                    username: cfg.ftpUsername,
+                    password: cfg.ftpPassword
+                )
+                uploaded += 1
+            } catch {
+                if getIsCancelRequested() {
+                    try? deleteFtpFile(
+                        host: host,
+                        port: port,
+                        remoteDir: remoteSubdir,
+                        filename: item.filename,
+                        username: cfg.ftpUsername,
+                        password: cfg.ftpPassword,
+                        ignoreMissing: true
+                    )
+                    return
+                }
+                throw error
+            }
+        }
+    }
+
+    private func runSnowskyFtpSync(
+        host: String,
+        port: Int,
+        rDir: String,
+        vaultDir: String,
+        cfg: VaultConfig,
+        startTime: Date
+    ) throws -> String {
+        let plan = buildSnowskyPlan(vaultDir: vaultDir)
+        let totalOps = plan.totalOperations
+
+        emitSyncEvent(type: "RSYNC", message: "[SNOWSKY SYNC] Starting Wi-Fi FTP sync (Library/ + Playlist subfolders, no .m3u files)")
+        updateSyncState { st in
+            st.phase = "syncing"
+            st.totalCount = totalOps
+            st.processedCount = 0
+        }
+
+        var processed = 0
+        var uploaded = 0
+        var skipped = 0
+        var removed = 0
+
+        let joinRemote: (String) -> String = { sub in
+            rDir.isEmpty ? "/\(sub)" : "\(rDir)/\(sub)"
+        }
+
+        // 1. Sync Library/
+        let libraryRemoteDir = joinRemote("Library")
+        emitSyncEvent(type: "RSYNC", message: "[SNOWSKY SYNC] Syncing Library (\(plan.libraryTracks.count) tracks) -> \(libraryRemoteDir)/")
+        try syncFtpSnowskySubfolder(
+            host: host,
+            port: port,
+            remoteSubdir: libraryRemoteDir,
+            tracks: plan.libraryTracks,
+            cfg: cfg,
+            totalOps: totalOps,
+            processed: &processed,
+            uploaded: &uploaded,
+            skipped: &skipped,
+            removed: &removed
+        )
+
+        // 2. Sync each <SanitizedPlaylistName>/
+        if !getIsCancelRequested() {
+            updateSyncState { st in
+                st.phase = "playlists"
+                st.currentFile = nil
+            }
+            for pl in plan.playlists {
+                if getIsCancelRequested() { break }
+                let plRemoteDir = joinRemote(pl.folderName)
+                emitSyncEvent(type: "PLAYLIST", message: "[SNOWSKY SYNC] Syncing Playlist \"\(pl.rawName)\" (\(pl.tracks.count) tracks) -> \(plRemoteDir)/")
+                try syncFtpSnowskySubfolder(
+                    host: host,
+                    port: port,
+                    remoteSubdir: plRemoteDir,
+                    tracks: pl.tracks,
+                    cfg: cfg,
+                    totalOps: totalOps,
+                    processed: &processed,
+                    uploaded: &uploaded,
+                    skipped: &skipped,
+                    removed: &removed
+                )
+            }
+        }
+
+        // 3. Remove any .m3u / .m3u8 files at rDir root
+        if !getIsCancelRequested() {
+            updateSyncState { st in
+                st.phase = "cleaning"
+                st.currentFile = nil
+            }
+            if let rootEntries = try? listFtpDirectory(
+                host: host,
+                port: port,
+                remoteDir: rDir,
+                username: cfg.ftpUsername,
+                password: cfg.ftpPassword
+            ) {
+                for entry in rootEntries where !entry.isDirectory {
+                    if getIsCancelRequested() { break }
+                    let ext = "." + (entry.name as NSString).pathExtension.lowercased()
+                    if ext == ".m3u" || ext == ".m3u8" {
+                        emitSyncEvent(type: "RSYNC", message: "[SNOWSKY SYNC] Deleting playlist file: \(entry.name)")
+                        try? deleteFtpFile(
+                            host: host,
+                            port: port,
+                            remoteDir: rDir,
+                            filename: entry.name,
+                            username: cfg.ftpUsername,
+                            password: cfg.ftpPassword,
+                            ignoreMissing: true
+                        )
+                        removed += 1
+                    }
+                }
+            }
+        }
+
+        let elapsed = String(format: "%.1f", Date().timeIntervalSince(startTime))
+        if getIsCancelRequested() {
+            emitSyncEvent(
+                type: "DONE",
+                message: "[SNOWSKY SYNC] Canceled cleanly by user after \(elapsed)s (\(uploaded) uploaded, \(skipped) unchanged, \(removed) removed before stop)."
+            )
+            return "canceled"
+        }
+
+        emitSyncEvent(
+            type: "DONE",
+            message: "[DONE] [SNOWSKY SYNC] Complete: \(uploaded) uploaded, \(skipped) unchanged, \(removed) removed across Library and \(plan.playlists.count) playlists in \(elapsed)s"
+        )
+        return "done"
     }
 }

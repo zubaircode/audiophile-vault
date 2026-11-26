@@ -1208,8 +1208,8 @@ function AppContent() {
       setConfig((prev) => ({ ...prev, ...updated }));
       showToast(
         nextVal
-          ? 'SNOWSKY Mode enabled: Playlists will export as root folders on SD'
-          : 'SNOWSKY Mode disabled'
+          ? 'SNOWSKY Mode enabled: Tracks will sync into Library/ and Playlist subfolders without .m3u files'
+          : 'SNOWSKY Mode disabled: Flat Music/ layout with .m3u playlists'
       );
     } catch (err) {
       setConfig((prev) => ({ ...prev, exportPlaylistFolders: !nextVal }));

@@ -7,7 +7,7 @@ import UniformTypeIdentifiers
 public final class ArtworkAndTagService: @unchecked Sendable {
     public static let shared = ArtworkAndTagService()
 
-    private static let userAgent = "AudiophileVault/2.1.2 ( contact@audiophilevault.local )"
+    private static let userAgent = "AudiophileVault/2.1.3 ( contact@audiophilevault.local )"
     private let lock = NSRecursiveLock()
 
     private struct MemoArtEntry {
