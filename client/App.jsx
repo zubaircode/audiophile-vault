@@ -133,7 +133,16 @@ function AppContent() {
   // Pipeline state
   const [isIngesting, setIsIngesting] = useState(false);
   const [isFetchingArtwork, setIsFetchingArtwork] = useState(false);
-  const [isSyncing, setIsSyncing] = useState(false);
+  const [syncState, setSyncState] = useState({
+    isSyncing: false,
+    isCanceling: false,
+    mode: 'sd',
+    phase: 'idle',
+    currentFile: null,
+    processedCount: 0,
+    totalCount: 0,
+  });
+  const isSyncing = Boolean(syncState.isSyncing);
   const [isEjecting, setIsEjecting] = useState(false);
 
   // Console & Toast feedback
@@ -193,8 +202,10 @@ function AppContent() {
       setDraftVaultPath(data.vaultPath || '');
       if (data.status) {
         setIsIngesting(Boolean(data.status.isIngesting));
-        setIsSyncing(Boolean(data.status.isSyncing));
         setIsFetchingArtwork(Boolean(data.status.isFetchingArtwork));
+        if (typeof data.status.isSyncing === 'boolean') {
+          setSyncState((prev) => ({ ...prev, isSyncing: Boolean(data.status.isSyncing) }));
+        }
       }
       if (data.sdCardPath) {
         setSelectedVolumePath((prev) => prev || data.sdCardPath);
@@ -311,10 +322,24 @@ function AppContent() {
     }
   }, []);
 
+  const fetchSyncStatus = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/sync/status`);
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data && typeof data === 'object') {
+        setSyncState((prev) => ({ ...prev, ...data }));
+      }
+    } catch {
+      // Ignore transient bridge errors
+    }
+  }, []);
+
   // Initial load + periodic volume/Bonjour polling (every 8s)
   useEffect(() => {
     (async () => {
       await fetchConfig();
+      await fetchSyncStatus();
       await fetchVolumes();
       await fetchFtpServices();
     })();
@@ -324,6 +349,16 @@ function AppContent() {
     window.__avNotifyFtpServices = (list) => {
       setFtpServices(Array.isArray(list) ? list : []);
     };
+    window.__avNotifySyncState = (next) => {
+      if (next && typeof next === 'object') {
+        setSyncState((prev) => ({ ...prev, ...next }));
+      }
+    };
+
+    const handleFocus = () => {
+      fetchSyncStatus();
+    };
+    window.addEventListener('focus', handleFocus);
 
     const interval = setInterval(() => {
       fetchVolumes();
@@ -332,11 +367,15 @@ function AppContent() {
 
     return () => {
       clearInterval(interval);
+      window.removeEventListener('focus', handleFocus);
       if (window.__avNotifyFtpServices) {
         delete window.__avNotifyFtpServices;
       }
+      if (window.__avNotifySyncState) {
+        delete window.__avNotifySyncState;
+      }
     };
-  }, [fetchConfig, fetchVolumes, fetchFtpServices, fetchTracks, fetchPlaylists]);
+  }, [fetchConfig, fetchSyncStatus, fetchVolumes, fetchFtpServices, fetchTracks, fetchPlaylists]);
 
   const connectIngestStream = useCallback(
     ({ replay = false } = {}) => {
@@ -458,7 +497,12 @@ function AppContent() {
         appendLog(payload);
 
         if (payload.type === 'DONE' || payload.type === 'ERROR') {
-          setIsSyncing(false);
+          setSyncState((prev) => ({
+            ...prev,
+            isSyncing: false,
+            isCanceling: false,
+            phase: payload.type === 'ERROR' ? 'error' : 'done',
+          }));
           fetchVolumes();
         }
       } catch {
@@ -1150,6 +1194,7 @@ function AppContent() {
   };
 
   const handleToggleExportPlaylistFolders = useCallback(async () => {
+    if (isSyncing) return;
     const nextVal = !config.exportPlaylistFolders;
     setConfig((prev) => ({ ...prev, exportPlaylistFolders: nextVal }));
     try {
@@ -1205,7 +1250,15 @@ function AppContent() {
     const isFtpMode = config.syncTargetMode === 'ftp';
     if (!isFtpMode && !selectedVolumePath) return;
     setIsConsoleOpen(true);
-    setIsSyncing(true);
+    setSyncState((prev) => ({
+      ...prev,
+      isSyncing: true,
+      isCanceling: false,
+      mode: isFtpMode ? 'ftp' : 'sd',
+      phase: 'scanning',
+      processedCount: 0,
+      totalCount: 0,
+    }));
     try {
       const res = await fetch(`${API_BASE}/api/sync`, {
         method: 'POST',
@@ -1218,17 +1271,30 @@ function AppContent() {
       });
       if (!res.ok) {
         const err = await res.json();
-        setIsSyncing(false);
+        setSyncState((prev) => ({ ...prev, isSyncing: false, isCanceling: false, phase: 'error' }));
         appendLog({
           type: 'ERROR',
-          message: `[ERROR] ${err.error || 'Could not start rsync'}`,
+          message: `[ERROR] ${err.error || 'Could not start sync'}`,
         });
       }
     } catch (err) {
-      setIsSyncing(false);
+      setSyncState((prev) => ({ ...prev, isSyncing: false, isCanceling: false, phase: 'error' }));
       appendLog({
         type: 'ERROR',
         message: `[ERROR] Network error starting sync: ${err.message}`,
+      });
+    }
+  };
+
+  const handleCancelSync = async () => {
+    if (!isSyncing) return;
+    setSyncState((prev) => ({ ...prev, isCanceling: true, phase: 'canceling' }));
+    try {
+      await fetch(`${API_BASE}/api/sync/cancel`, { method: 'POST' });
+    } catch (err) {
+      appendLog({
+        type: 'ERROR',
+        message: `[ERROR] Failed to cancel sync: ${err.message}`,
       });
     }
   };
@@ -1456,6 +1522,7 @@ function AppContent() {
         ftpManualHost={config.ftpManualHost || ''}
         ftpServices={ftpServices}
         isWorking={isIngesting || isFetchingArtwork || isSyncing}
+        isSyncing={isSyncing}
         isFetchingArtwork={isFetchingArtwork}
         onStartArtworkFetch={handleStartArtworkFetch}
         onStopArtworkFetch={handleStopArtworkFetch}
@@ -1477,9 +1544,11 @@ function AppContent() {
         ftpServices={ftpServices}
         onStartIngest={handleStartIngest}
         onStartSync={handleStartSync}
+        onCancelSync={handleCancelSync}
         onEjectVolume={handleEjectVolume}
         isIngesting={isIngesting}
         isSyncing={isSyncing}
+        syncState={syncState}
         isEjecting={isEjecting}
       />
 

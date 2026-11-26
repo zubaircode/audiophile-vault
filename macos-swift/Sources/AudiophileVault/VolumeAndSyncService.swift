@@ -26,26 +26,116 @@ public final class VolumeAndSyncService: @unchecked Sendable {
     ]
     private static let manifestFilename = ".av_snowflake_manifest.json"
 
+    public struct SyncState: Sendable {
+        public var isSyncing: Bool = false
+        public var isCanceling: Bool = false
+        public var mode: String = "sd"
+        public var phase: String = "idle"
+        public var currentFile: String? = nil
+        public var processedCount: Int = 0
+        public var totalCount: Int = 0
+        public var startedAt: Date? = nil
+
+        public func toDictionary() -> [String: Any] {
+            var dict: [String: Any] = [
+                "isSyncing": isSyncing,
+                "isCanceling": isCanceling,
+                "mode": mode,
+                "phase": phase,
+                "processedCount": processedCount,
+                "totalCount": totalCount
+            ]
+            if let currentFile = currentFile {
+                dict["currentFile"] = currentFile
+            } else {
+                dict["currentFile"] = NSNull()
+            }
+            if let startedAt = startedAt {
+                dict["startedAt"] = ISO8601DateFormatter().string(from: startedAt)
+            } else {
+                dict["startedAt"] = NSNull()
+            }
+            return dict
+        }
+    }
+
     private let lock = NSLock()
-    private var isSyncing = false
+    private var syncState = SyncState()
+    private var isCancelRequested = false
     private var activeProcess: Process? = nil
+    private var onSyncStateChanged: (([String: Any]) -> Void)? = nil
 
     private init() {}
+
+    public func setOnSyncStateChanged(_ handler: @escaping ([String: Any]) -> Void) {
+        lock.lock()
+        onSyncStateChanged = handler
+        lock.unlock()
+    }
 
     public func getIsSyncing() -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        return isSyncing
+        return syncState.isSyncing
     }
 
-    public func killActiveRsync() {
+    public func getSyncStatus() -> [String: Any] {
         lock.lock()
-        let proc = activeProcess
-        activeProcess = nil
+        let dict = syncState.toDictionary()
         lock.unlock()
+        return dict
+    }
+
+    private func getIsCancelRequested() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return isCancelRequested
+    }
+
+    private func broadcastSyncState() {
+        lock.lock()
+        let handler = onSyncStateChanged
+        let dict = syncState.toDictionary()
+        lock.unlock()
+        handler?(dict)
+    }
+
+    private func updateSyncState(_ mutate: (inout SyncState) -> Void) {
+        lock.lock()
+        mutate(&syncState)
+        let handler = onSyncStateChanged
+        let dict = syncState.toDictionary()
+        lock.unlock()
+        handler?(dict)
+    }
+
+    @discardableResult
+    public func cancelSync() -> [String: Any] {
+        lock.lock()
+        guard syncState.isSyncing else {
+            let dict = syncState.toDictionary()
+            lock.unlock()
+            return ["stopped": false, "state": dict]
+        }
+        isCancelRequested = true
+        syncState.isCanceling = true
+        syncState.phase = "canceling"
+        let proc = activeProcess
+        let handler = onSyncStateChanged
+        let dict = syncState.toDictionary()
+        lock.unlock()
+
+        emitSyncEvent(type: "SKIPPED", message: "[SYNC] Cancellation requested — stopping active transfer...")
+        handler?(dict)
+
         if let proc = proc, proc.isRunning {
             proc.terminate()
         }
+        return ["stopped": true, "state": dict]
+    }
+
+    public func killActiveRsync() {
+        _ = cancelSync()
     }
 
     private func emitSyncEvent(type: String, message: String, extra: [String: Any] = [:]) {
@@ -327,17 +417,36 @@ public final class VolumeAndSyncService: @unchecked Sendable {
 
     // MARK: - Incremental Sync via /usr/bin/rsync
     public func runRsyncToSdCard(requestedVolumePath: String? = nil) async throws {
+        let startTime = Date()
         try lock.withLock {
-            if isSyncing {
-                throw NSError(domain: "VolumeAndSyncService", code: 409, userInfo: [NSLocalizedDescriptionKey: "An rsync operation is already in progress."])
+            if syncState.isSyncing {
+                throw NSError(domain: "VolumeAndSyncService", code: 409, userInfo: [NSLocalizedDescriptionKey: "A sync operation is already in progress."])
             }
-            isSyncing = true
+            isCancelRequested = false
+            syncState = SyncState(
+                isSyncing: true,
+                isCanceling: false,
+                mode: "sd",
+                phase: "scanning",
+                currentFile: nil,
+                processedCount: 0,
+                totalCount: 0,
+                startedAt: startTime
+            )
         }
+        broadcastSyncState()
 
+        var finalPhase = "done"
         defer {
+            updateSyncState { st in
+                st.isSyncing = false
+                st.isCanceling = false
+                st.phase = finalPhase
+                st.currentFile = nil
+            }
             lock.withLock {
                 activeProcess = nil
-                isSyncing = false
+                isCancelRequested = false
             }
         }
 
@@ -345,12 +454,18 @@ public final class VolumeAndSyncService: @unchecked Sendable {
         let vaultDir = lib.getVaultDir()
         let volumePath = (requestedVolumePath?.isEmpty == false) ? requestedVolumePath! : lib.config.sdCardPath
         if volumePath.isEmpty {
-            throw NSError(domain: "VolumeAndSyncService", code: 400, userInfo: [NSLocalizedDescriptionKey: "No target SD card or external volume selected."])
+            finalPhase = "error"
+            let msg = "No target SD card or external volume selected."
+            emitSyncEvent(type: "ERROR", message: "[ERROR] \(msg)")
+            throw NSError(domain: "VolumeAndSyncService", code: 400, userInfo: [NSLocalizedDescriptionKey: msg])
         }
 
         let safety = isSafeExternalVolume(volumePath)
         if !safety.safe {
-            throw NSError(domain: "VolumeAndSyncService", code: 400, userInfo: [NSLocalizedDescriptionKey: "Unsafe target volume blocked: \(safety.reason ?? "Unsafe path")"])
+            finalPhase = "error"
+            let msg = "Unsafe target volume blocked: \(safety.reason ?? "Unsafe path")"
+            emitSyncEvent(type: "ERROR", message: "[ERROR] \(msg)")
+            throw NSError(domain: "VolumeAndSyncService", code: 400, userInfo: [NSLocalizedDescriptionKey: msg])
         }
 
         let resolvedTarget = resolveTargetMusicDir(volumePath)
@@ -362,9 +477,26 @@ public final class VolumeAndSyncService: @unchecked Sendable {
 
         PlaylistService.shared.syncAllPlaylistsM3u()
 
+        let localEntries = (try? FileManager.default.contentsOfDirectory(atPath: normalizedVaultDir)) ?? []
+        let trackCount = localEntries.filter {
+            let ext = "." + ($0 as NSString).pathExtension.lowercased()
+            return LibraryService.supportedExtensions.contains(ext)
+        }.count
+        let playlistCount = localEntries.filter {
+            let ext = "." + ($0 as NSString).pathExtension.lowercased()
+            return ext == ".m3u" || ext == ".m3u8"
+        }.count
+        let totalLocal = trackCount + playlistCount
+
+        updateSyncState { st in
+            st.phase = "syncing"
+            st.totalCount = totalLocal
+        }
+
         let rsyncArgs = [
             "-avu",
             "--delete",
+            "--itemize-changes",
             "--modify-window=1",
             "--exclude=.vault_index.json",
             "--exclude=.DS_Store",
@@ -372,78 +504,177 @@ public final class VolumeAndSyncService: @unchecked Sendable {
             targetMusicDir
         ]
 
-        emitSyncEvent(type: "RSYNC", message: "[SYNC] Syncing vault to SD Card: \(targetMusicDir)")
-        emitSyncEvent(type: "RSYNC", message: "[RSYNC] Synchronizing audio tracks & .m3u playlists to \"\(targetMusicDir)\"")
+        emitSyncEvent(type: "RSYNC", message: "[SYNC] Starting SD Card sync -> \(targetMusicDir)")
+        emitSyncEvent(type: "RSYNC", message: "[SYNC] Scanning local library (\(trackCount) tracks, \(playlistCount) playlists)...")
 
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            let proc = Process()
-            proc.executableURL = URL(fileURLWithPath: "/usr/bin/rsync")
-            proc.arguments = rsyncArgs
-            var env = ProcessInfo.processInfo.environment
-            env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-            env["COPYFILE_DISABLE"] = "1"
-            proc.environment = env
+        final class RsyncTracker: @unchecked Sendable {
+            private let l = NSLock()
+            private var remainder = ""
+            private var copied = 0
+            private var deleted = 0
 
-            let outPipe = Pipe()
-            let errPipe = Pipe()
-            proc.standardOutput = outPipe
-            proc.standardError = errPipe
-
-            outPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
-                let data = handle.availableData
-                guard !data.isEmpty, let str = String(data: data, encoding: .utf8) else { return }
-                for line in str.components(separatedBy: .newlines) {
-                    let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !trimmed.isEmpty {
-                        self?.emitSyncEvent(type: "RSYNC", message: "[RSYNC] \(trimmed)")
-                    }
-                }
+            func appendAndDrainLines(_ chunk: String) -> [String] {
+                l.lock()
+                remainder += chunk
+                let parts = remainder.components(separatedBy: "\n")
+                remainder = parts.last ?? ""
+                l.unlock()
+                return Array(parts.dropLast())
             }
 
-            errPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
-                let data = handle.availableData
-                guard !data.isEmpty, let str = String(data: data, encoding: .utf8) else { return }
-                for line in str.components(separatedBy: .newlines) {
-                    let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !trimmed.isEmpty {
-                        self?.emitSyncEvent(type: "ERROR", message: "[RSYNC STDERR] \(trimmed)")
-                    }
-                }
+            func recordCopy() {
+                l.lock()
+                copied += 1
+                l.unlock()
             }
 
-            proc.terminationHandler = { [weak self] p in
-                outPipe.fileHandleForReading.readabilityHandler = nil
-                errPipe.fileHandleForReading.readabilityHandler = nil
-                if p.terminationStatus == 0 {
-                    continuation.resume()
-                } else {
-                    let msg = "[ERROR] rsync exited with code \(p.terminationStatus)"
-                    self?.emitSyncEvent(type: "ERROR", message: msg)
-                    continuation.resume(throwing: NSError(domain: "VolumeAndSyncService", code: Int(p.terminationStatus), userInfo: [NSLocalizedDescriptionKey: msg]))
-                }
+            func recordDelete() {
+                l.lock()
+                deleted += 1
+                l.unlock()
             }
 
-            self.lock.lock()
-            self.activeProcess = proc
-            self.lock.unlock()
-
-            do {
-                try proc.run()
-            } catch {
-                self.emitSyncEvent(type: "ERROR", message: "[ERROR] Failed to spawn /usr/bin/rsync: \(error.localizedDescription)")
-                continuation.resume(throwing: error)
+            func snapshot() -> (copied: Int, deleted: Int) {
+                l.lock()
+                defer { l.unlock() }
+                return (copied, deleted)
             }
         }
+        let tracker = RsyncTracker()
 
-        let trimmedMusic = targetMusicDir.replacingOccurrences(of: #"/+$"#, with: "", options: .regularExpression)
-        let sdRoot = (trimmedMusic as NSString).deletingLastPathComponent
-        syncPlaylistFolders(
-            sdRoot: sdRoot,
-            vaultDir: normalizedVaultDir,
-            exportPlaylistFolders: lib.config.exportPlaylistFolders
+        do {
+            let exitCode: Int32 = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Int32, Error>) in
+                let proc = Process()
+                proc.executableURL = URL(fileURLWithPath: "/usr/bin/rsync")
+                proc.arguments = rsyncArgs
+                var env = ProcessInfo.processInfo.environment
+                env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+                env["COPYFILE_DISABLE"] = "1"
+                proc.environment = env
+
+                let outPipe = Pipe()
+                let errPipe = Pipe()
+                proc.standardOutput = outPipe
+                proc.standardError = errPipe
+
+                outPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
+                    let data = handle.availableData
+                    guard !data.isEmpty, let chunk = String(data: data, encoding: .utf8), let self = self else { return }
+
+                    for rawLine in tracker.appendAndDrainLines(chunk) {
+                        let trimmed = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard !trimmed.isEmpty else { continue }
+
+                        if trimmed.hasPrefix("*deleting ") {
+                            let file = String(trimmed.dropFirst("*deleting ".count)).trimmingCharacters(in: .whitespaces)
+                            tracker.recordDelete()
+                            self.updateSyncState { st in
+                                st.currentFile = file
+                                st.processedCount += 1
+                            }
+                            self.emitSyncEvent(type: "RSYNC", message: "[SYNC] Deleting: \(file)")
+                        } else if trimmed.hasPrefix(">f") || trimmed.hasPrefix("<f") {
+                            if let spaceIdx = trimmed.firstIndex(of: " ") {
+                                let file = String(trimmed[trimmed.index(after: spaceIdx)...]).trimmingCharacters(in: .whitespaces)
+                                tracker.recordCopy()
+                                self.updateSyncState { st in
+                                    st.currentFile = file
+                                    st.processedCount += 1
+                                }
+                                self.emitSyncEvent(type: "RSYNC", message: "[SYNC] Copying: \(file)")
+                            } else {
+                                self.emitSyncEvent(type: "RSYNC", message: "[RSYNC] \(trimmed)")
+                            }
+                        } else if !trimmed.hasPrefix("building file list") &&
+                                    !trimmed.hasPrefix("sending incremental") &&
+                                    !trimmed.hasPrefix("sent ") &&
+                                    !trimmed.hasPrefix("total size ") &&
+                                    !trimmed.hasSuffix("/") {
+                            self.emitSyncEvent(type: "RSYNC", message: "[RSYNC] \(trimmed)")
+                        }
+                    }
+                }
+
+                errPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
+                    let data = handle.availableData
+                    guard !data.isEmpty, let str = String(data: data, encoding: .utf8) else { return }
+                    for line in str.components(separatedBy: .newlines) {
+                        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !trimmed.isEmpty {
+                            self?.emitSyncEvent(type: "ERROR", message: "[RSYNC STDERR] \(trimmed)")
+                        }
+                    }
+                }
+
+                proc.terminationHandler = { p in
+                    outPipe.fileHandleForReading.readabilityHandler = nil
+                    errPipe.fileHandleForReading.readabilityHandler = nil
+                    continuation.resume(returning: p.terminationStatus)
+                }
+
+                self.lock.lock()
+                self.activeProcess = proc
+                let alreadyCanceled = self.isCancelRequested
+                self.lock.unlock()
+
+                if alreadyCanceled {
+                    continuation.resume(returning: 15)
+                    return
+                }
+
+                do {
+                    try proc.run()
+                } catch {
+                    self.emitSyncEvent(type: "ERROR", message: "[ERROR] Failed to spawn /usr/bin/rsync: \(error.localizedDescription)")
+                    continuation.resume(throwing: error)
+                }
+            }
+
+            let counts = tracker.snapshot()
+            let elapsed = String(format: "%.1f", Date().timeIntervalSince(startTime))
+            if getIsCancelRequested() || exitCode == 15 || exitCode == 20 {
+                finalPhase = "canceled"
+                emitSyncEvent(
+                    type: "DONE",
+                    message: "[SYNC] Canceled cleanly by user after \(elapsed)s (\(counts.copied) copied, \(counts.deleted) removed before stop)."
+                )
+                return
+            }
+
+            if exitCode != 0 {
+                finalPhase = "error"
+                let msg = "[ERROR] rsync exited with code \(exitCode)"
+                emitSyncEvent(type: "ERROR", message: msg)
+                throw NSError(domain: "VolumeAndSyncService", code: Int(exitCode), userInfo: [NSLocalizedDescriptionKey: msg])
+            }
+        } catch {
+            if finalPhase != "canceled" {
+                finalPhase = "error"
+            }
+            throw error
+        }
+
+        if !getIsCancelRequested() {
+            updateSyncState { st in
+                st.phase = "playlists"
+                st.currentFile = nil
+            }
+            let trimmedMusic = targetMusicDir.replacingOccurrences(of: #"/+$"#, with: "", options: .regularExpression)
+            let sdRoot = (trimmedMusic as NSString).deletingLastPathComponent
+            syncPlaylistFolders(
+                sdRoot: sdRoot,
+                vaultDir: normalizedVaultDir,
+                exportPlaylistFolders: lib.config.exportPlaylistFolders
+            )
+        }
+
+        let counts = tracker.snapshot()
+        let elapsed = String(format: "%.1f", Date().timeIntervalSince(startTime))
+        let unchangedCount = max(0, totalLocal - counts.copied)
+        emitSyncEvent(
+            type: "DONE",
+            message: "[SYNC] Complete: \(counts.copied) copied, \(unchangedCount) unchanged, \(counts.deleted) removed in \(elapsed)s."
         )
-
-        emitSyncEvent(type: "DONE", message: "[DONE] Sync to \"\(targetMusicDir)\" finished cleanly (exit code 0).")
     }
 
     // MARK: - Android-Safe Wi-Fi FTP Delta-Sync Engine
@@ -843,17 +1074,36 @@ public final class VolumeAndSyncService: @unchecked Sendable {
     }
 
     public func runFtpSync() async throws {
+        let startTime = Date()
         try lock.withLock {
-            if isSyncing {
+            if syncState.isSyncing {
                 throw NSError(domain: "VolumeAndSyncService", code: 409, userInfo: [NSLocalizedDescriptionKey: "A sync operation is already in progress."])
             }
-            isSyncing = true
+            isCancelRequested = false
+            syncState = SyncState(
+                isSyncing: true,
+                isCanceling: false,
+                mode: "ftp",
+                phase: "scanning",
+                currentFile: nil,
+                processedCount: 0,
+                totalCount: 0,
+                startedAt: startTime
+            )
         }
+        broadcastSyncState()
 
+        var finalPhase = "done"
         defer {
+            updateSyncState { st in
+                st.isSyncing = false
+                st.isCanceling = false
+                st.phase = finalPhase
+                st.currentFile = nil
+            }
             lock.withLock {
                 activeProcess = nil
-                isSyncing = false
+                isCancelRequested = false
             }
         }
 
@@ -871,6 +1121,7 @@ public final class VolumeAndSyncService: @unchecked Sendable {
             manualHost: cfg.ftpManualHost,
             manualPort: cfg.ftpManualPort
         ) else {
+            finalPhase = "error"
             let msg = "[ERROR] [FTP SYNC] Could not resolve \"\(svcName)\". Ensure the player's Wi-Fi FTP server is running."
             emitSyncEvent(type: "ERROR", message: msg)
             throw NSError(domain: "VolumeAndSyncService", code: 404, userInfo: [NSLocalizedDescriptionKey: msg])
@@ -880,13 +1131,21 @@ public final class VolumeAndSyncService: @unchecked Sendable {
 
         PlaylistService.shared.syncAllPlaylistsM3u()
 
-        let remoteEntries = try listFtpDirectory(
-            host: target.host,
-            port: target.port,
-            remoteDir: rDir,
-            username: cfg.ftpUsername,
-            password: cfg.ftpPassword
-        )
+        let remoteEntries: [FtpRemoteEntry]
+        do {
+            remoteEntries = try listFtpDirectory(
+                host: target.host,
+                port: target.port,
+                remoteDir: rDir,
+                username: cfg.ftpUsername,
+                password: cfg.ftpPassword
+            )
+        } catch {
+            finalPhase = "error"
+            emitSyncEvent(type: "ERROR", message: "[ERROR] [FTP SYNC] \(error.localizedDescription)")
+            throw error
+        }
+
         var remoteByName: [String: FtpRemoteEntry] = [:]
         for entry in remoteEntries where !entry.isDirectory {
             remoteByName[entry.name] = entry
@@ -916,80 +1175,159 @@ public final class VolumeAndSyncService: @unchecked Sendable {
             }
         }
 
+        let totalLocal = localAudioFiles.count + localPlaylistFiles.count
+        emitSyncEvent(type: "RSYNC", message: "[FTP SYNC] Scanning local library (\(localAudioFiles.count) tracks, \(localPlaylistFiles.count) playlists)...")
+        updateSyncState { st in
+            st.phase = "syncing"
+            st.totalCount = totalLocal
+            st.processedCount = 0
+        }
+
         var uploaded = 0
         var skipped = 0
         var playlistsUpdated = 0
         var removed = 0
+        var processed = 0
 
         // 1. Size-only delta sync for audio tracks (Android 13 SAF compatible)
         for item in localAudioFiles {
+            if getIsCancelRequested() { break }
+            processed += 1
+
             if let remote = remoteByName[item.name], remote.size == item.size {
                 skipped += 1
+                updateSyncState { st in
+                    st.processedCount = processed
+                }
                 continue
             }
-            emitSyncEvent(type: "RSYNC", message: "[FTP SYNC] Uploading \(item.name) (\(Self.formatByteCount(item.size)))")
-            try uploadFtpFile(
-                localPath: item.path,
-                host: target.host,
-                port: target.port,
-                remoteDir: rDir,
-                filename: item.name,
-                username: cfg.ftpUsername,
-                password: cfg.ftpPassword
+
+            updateSyncState { st in
+                st.currentFile = item.name
+                st.processedCount = processed
+            }
+            emitSyncEvent(
+                type: "RSYNC",
+                message: "[FTP SYNC] Uploading (\(processed)/\(totalLocal)): \(item.name) (\(Self.formatByteCount(item.size)))"
             )
-            uploaded += 1
+            do {
+                try uploadFtpFile(
+                    localPath: item.path,
+                    host: target.host,
+                    port: target.port,
+                    remoteDir: rDir,
+                    filename: item.name,
+                    username: cfg.ftpUsername,
+                    password: cfg.ftpPassword
+                )
+                uploaded += 1
+            } catch {
+                if getIsCancelRequested() {
+                    // Clean up partial file from remote storage on cancellation
+                    try? deleteFtpFile(
+                        host: target.host,
+                        port: target.port,
+                        remoteDir: rDir,
+                        filename: item.name,
+                        username: cfg.ftpUsername,
+                        password: cfg.ftpPassword,
+                        ignoreMissing: true
+                    )
+                    break
+                }
+                finalPhase = "error"
+                emitSyncEvent(type: "ERROR", message: "[ERROR] [FTP SYNC] \(error.localizedDescription)")
+                throw error
+            }
         }
 
         // 2. Safe playlist overwrite: DELE before STOR for .m3u / .m3u8
-        for pl in localPlaylistFiles {
-            emitSyncEvent(type: "PLAYLIST", message: "[FTP SYNC] Updating playlist \(pl.name)")
-            if remoteByName[pl.name] != nil {
-                try deleteFtpFile(
-                    host: target.host,
-                    port: target.port,
-                    remoteDir: rDir,
-                    filename: pl.name,
-                    username: cfg.ftpUsername,
-                    password: cfg.ftpPassword,
-                    ignoreMissing: true
-                )
+        if !getIsCancelRequested() {
+            updateSyncState { st in
+                st.phase = "playlists"
             }
-            try uploadFtpFile(
-                localPath: pl.path,
-                host: target.host,
-                port: target.port,
-                remoteDir: rDir,
-                filename: pl.name,
-                username: cfg.ftpUsername,
-                password: cfg.ftpPassword
-            )
-            playlistsUpdated += 1
+            for pl in localPlaylistFiles {
+                if getIsCancelRequested() { break }
+                processed += 1
+                updateSyncState { st in
+                    st.currentFile = pl.name
+                    st.processedCount = processed
+                }
+                emitSyncEvent(type: "PLAYLIST", message: "[FTP SYNC] Updating playlist: \(pl.name)")
+                if remoteByName[pl.name] != nil {
+                    try? deleteFtpFile(
+                        host: target.host,
+                        port: target.port,
+                        remoteDir: rDir,
+                        filename: pl.name,
+                        username: cfg.ftpUsername,
+                        password: cfg.ftpPassword,
+                        ignoreMissing: true
+                    )
+                }
+                do {
+                    try uploadFtpFile(
+                        localPath: pl.path,
+                        host: target.host,
+                        port: target.port,
+                        remoteDir: rDir,
+                        filename: pl.name,
+                        username: cfg.ftpUsername,
+                        password: cfg.ftpPassword
+                    )
+                    playlistsUpdated += 1
+                } catch {
+                    if getIsCancelRequested() { break }
+                    finalPhase = "error"
+                    emitSyncEvent(type: "ERROR", message: "[ERROR] [FTP SYNC] \(error.localizedDescription)")
+                    throw error
+                }
+            }
         }
 
         // 3. Mirror deletions for removed tracks/playlists (ignoring Android system folders)
-        for remote in remoteEntries where !remote.isDirectory {
-            let ext = "." + (remote.name as NSString).pathExtension.lowercased()
-            let isManagedAudio = LibraryService.supportedExtensions.contains(ext)
-            let isManagedPlaylist = (ext == ".m3u" || ext == ".m3u8")
-            guard isManagedAudio || isManagedPlaylist else { continue }
-            if !localAllSet.contains(remote.name) {
-                emitSyncEvent(type: "RSYNC", message: "[FTP SYNC] Removing \(remote.name)")
-                try deleteFtpFile(
-                    host: target.host,
-                    port: target.port,
-                    remoteDir: rDir,
-                    filename: remote.name,
-                    username: cfg.ftpUsername,
-                    password: cfg.ftpPassword,
-                    ignoreMissing: true
-                )
-                removed += 1
+        if !getIsCancelRequested() {
+            updateSyncState { st in
+                st.phase = "cleaning"
             }
+            for remote in remoteEntries where !remote.isDirectory {
+                if getIsCancelRequested() { break }
+                let ext = "." + (remote.name as NSString).pathExtension.lowercased()
+                let isManagedAudio = LibraryService.supportedExtensions.contains(ext)
+                let isManagedPlaylist = (ext == ".m3u" || ext == ".m3u8")
+                guard isManagedAudio || isManagedPlaylist else { continue }
+                if !localAllSet.contains(remote.name) {
+                    updateSyncState { st in
+                        st.currentFile = remote.name
+                    }
+                    emitSyncEvent(type: "RSYNC", message: "[FTP SYNC] Deleting: \(remote.name)")
+                    try? deleteFtpFile(
+                        host: target.host,
+                        port: target.port,
+                        remoteDir: rDir,
+                        filename: remote.name,
+                        username: cfg.ftpUsername,
+                        password: cfg.ftpPassword,
+                        ignoreMissing: true
+                    )
+                    removed += 1
+                }
+            }
+        }
+
+        let elapsed = String(format: "%.1f", Date().timeIntervalSince(startTime))
+        if getIsCancelRequested() {
+            finalPhase = "canceled"
+            emitSyncEvent(
+                type: "DONE",
+                message: "[FTP SYNC] Canceled cleanly by user after \(elapsed)s (\(uploaded) uploaded, \(skipped) unchanged, \(removed) removed before stop)."
+            )
+            return
         }
 
         emitSyncEvent(
             type: "DONE",
-            message: "[DONE] [FTP SYNC] Complete: \(uploaded) uploaded, \(skipped) skipped, \(playlistsUpdated) playlists updated, \(removed) removed"
+            message: "[DONE] [FTP SYNC] Complete: \(uploaded) uploaded, \(skipped) unchanged, \(playlistsUpdated) playlists updated, \(removed) removed in \(elapsed)s"
         )
     }
 }

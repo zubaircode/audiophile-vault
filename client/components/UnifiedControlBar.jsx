@@ -62,9 +62,11 @@ const UnifiedControlBar = memo(function UnifiedControlBar({
   ftpManualHost = '',
   onStartIngest,
   onStartSync,
+  onCancelSync,
   onEjectVolume,
   isIngesting = false,
   isSyncing = false,
+  syncState = null,
   isEjecting = false,
 }) {
   const {
@@ -401,35 +403,55 @@ const UnifiedControlBar = memo(function UnifiedControlBar({
               )}
             </button>
 
-            {/* 2. Sync to Target Button (SD Card or Wi-Fi FTP) */}
-            <button
-              type="button"
-              onClick={onStartSync}
-              disabled={!canSync || busy}
-              title={
-                isFtpMode
-                  ? `Sync via Wi-Fi FTP (${ftpDisplayLabel})`
-                  : isMounted
-                  ? `Sync to SD Card (${selectedVol.name})`
-                  : 'Sync to SD Card'
-              }
-              className="h-14 w-14 rounded-lg bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 hover:border-amber-500/50 hover:bg-amber-500/10 text-zinc-700 dark:text-zinc-300 hover:text-amber-600 dark:hover:text-amber-400 flex items-center justify-center transition-colors shadow-xs dark:shadow-sm disabled:opacity-40 disabled:cursor-not-allowed shrink-0 cursor-pointer"
-              aria-label={isFtpMode ? 'Sync via Wi-Fi FTP' : 'Sync to SD Card'}
-            >
-              {isSyncing ? (
-                <Loader2 className="w-5 h-5 animate-spin text-amber-500 dark:text-amber-400" />
-              ) : (
+            {/* 2. Sync / Stop Sync Button */}
+            {isSyncing ? (
+              <button
+                type="button"
+                onClick={onCancelSync}
+                disabled={Boolean(syncState?.isCanceling)}
+                title={
+                  syncState?.isCanceling
+                    ? 'Stopping sync…'
+                    : syncState?.totalCount > 0
+                    ? `Syncing (${syncState.processedCount}/${syncState.totalCount}) — Click to Stop Sync`
+                    : 'Syncing — Click to Stop Sync'
+                }
+                className="h-14 w-14 rounded-lg bg-red-500/15 border border-red-500/50 hover:bg-red-500/25 text-red-600 dark:text-red-400 flex flex-col items-center justify-center gap-0.5 transition-colors shadow-xs dark:shadow-sm disabled:opacity-50 disabled:cursor-not-allowed shrink-0 cursor-pointer"
+                aria-label="Stop Sync"
+              >
+                <Loader2 className="w-4 h-4 animate-spin text-red-500 dark:text-red-400" />
+                <span className="text-[9px] font-bold uppercase tracking-wider leading-none">
+                  {syncState?.isCanceling ? 'Stopping' : 'Stop'}
+                </span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={onStartSync}
+                disabled={!canSync || busy}
+                title={
+                  isFtpMode
+                    ? `Sync via Wi-Fi FTP (${ftpDisplayLabel})`
+                    : isMounted
+                    ? `Sync to SD Card (${selectedVol.name})`
+                    : 'Sync to SD Card'
+                }
+                className="h-14 w-14 rounded-lg bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 hover:border-amber-500/50 hover:bg-amber-500/10 text-zinc-700 dark:text-zinc-300 hover:text-amber-600 dark:hover:text-amber-400 flex items-center justify-center transition-colors shadow-xs dark:shadow-sm disabled:opacity-40 disabled:cursor-not-allowed shrink-0 cursor-pointer"
+                aria-label={isFtpMode ? 'Sync via Wi-Fi FTP' : 'Sync to SD Card'}
+              >
                 <RefreshCw className="w-5 h-5 text-amber-500 dark:text-amber-400" />
-              )}
-            </button>
+              </button>
+            )}
 
             {/* 3. Eject SD Card Button */}
             <button
               type="button"
               onClick={onEjectVolume}
-              disabled={isFtpMode || !isMounted || busy}
+              disabled={isSyncing || isFtpMode || !isMounted || busy}
               title={
-                isFtpMode
+                isSyncing
+                  ? 'Unavailable while sync is in progress'
+                  : isFtpMode
                   ? 'Not applicable for Wi-Fi FTP target'
                   : isMounted
                   ? `Eject SD Card (${selectedVol.name})`

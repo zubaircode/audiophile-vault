@@ -28,6 +28,7 @@ const Header = memo(function Header({
   ftpManualHost = '',
   ftpServices = [],
   isWorking = false,
+  isSyncing = false,
   isFetchingArtwork = false,
   onStartArtworkFetch,
   onStopArtworkFetch,
@@ -310,12 +311,17 @@ const Header = memo(function Header({
             data-no-drag="true"
             style={{ WebkitAppRegion: 'no-drag' }}
             aria-checked={exportPlaylistFolders}
+            disabled={isSyncing}
             onClick={onToggleExportPlaylistFolders}
-            title={`Snowsky Mode: Export Playlists as Root Folders (Auto-enabled for SNOWSKY drives) — ${
-              exportPlaylistFolders ? 'Active' : 'Inactive'
-            }`}
+            title={
+              isSyncing
+                ? 'Unavailable while sync is in progress'
+                : `Snowsky Mode: Export Playlists as Root Folders (Auto-enabled for SNOWSKY drives) — ${
+                    exportPlaylistFolders ? 'Active' : 'Inactive'
+                  }`
+            }
             aria-label="Snowsky Mode: Export Playlists as Root Folders (Auto-enabled for SNOWSKY drives)"
-            className={`h-14 w-14 rounded-lg flex items-center justify-center transition-colors shadow-xs dark:shadow-none shrink-0 cursor-pointer ${
+            className={`h-14 w-14 rounded-lg flex items-center justify-center transition-colors shadow-xs dark:shadow-none shrink-0 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer ${
               exportPlaylistFolders
                 ? 'bg-sky-500/15 border border-sky-500/50 text-sky-600 dark:text-sky-400 hover:bg-sky-500/25'
                 : 'bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 text-zinc-500 dark:text-zinc-400 hover:border-zinc-300 dark:hover:border-zinc-700 hover:text-zinc-700 dark:hover:text-zinc-200'
@@ -329,9 +335,14 @@ const Header = memo(function Header({
             type="button"
             data-no-drag="true"
             style={{ WebkitAppRegion: 'no-drag' }}
+            disabled={isSyncing}
             onClick={onOpenSettings}
-            title="Configure Directories & Target SD Card Settings"
-            className="h-14 w-14 rounded-lg bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 hover:border-amber-500/50 dark:hover:border-amber-500/50 hover:bg-zinc-50 dark:hover:bg-zinc-800/80 text-zinc-700 dark:text-zinc-300 hover:text-amber-600 dark:hover:text-amber-400 flex items-center justify-center transition-colors shadow-xs dark:shadow-none shrink-0 cursor-pointer"
+            title={
+              isSyncing
+                ? 'Unavailable while sync is in progress'
+                : 'Configure Directories & Target SD Card Settings'
+            }
+            className="h-14 w-14 rounded-lg bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 hover:border-amber-500/50 dark:hover:border-amber-500/50 hover:bg-zinc-50 dark:hover:bg-zinc-800/80 text-zinc-700 dark:text-zinc-300 hover:text-amber-600 dark:hover:text-amber-400 flex items-center justify-center transition-colors shadow-xs dark:shadow-none shrink-0 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
           >
             <Settings className="w-5 h-5 text-amber-500 dark:text-amber-400" />
           </button>

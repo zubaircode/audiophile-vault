@@ -134,6 +134,16 @@ public final class WebViewController: NSViewController, WKScriptMessageHandlerWi
         }
         BonjourFtpBrowser.shared.startBrowsing()
 
+        VolumeAndSyncService.shared.setOnSyncStateChanged { [weak self] state in
+            guard let data = try? JSONSerialization.data(withJSONObject: state),
+                  let jsonStr = String(data: data, encoding: .utf8) else {
+                return
+            }
+            DispatchQueue.main.async {
+                self?.webView?.evaluateJavaScript("window.__avNotifySyncState && window.__avNotifySyncState(\(jsonStr));", completionHandler: nil)
+            }
+        }
+
         if let indexUrl = URL(string: "av://localhost/index.html") {
             webView.load(URLRequest(url: indexUrl))
         }
@@ -569,7 +579,15 @@ public final class WebViewController: NSViewController, WKScriptMessageHandlerWi
                 return ["status": 200, "body": res]
             }
 
-            // 8. /api/sync
+            // 8. /api/sync, /api/sync/status, /api/sync/cancel
+            if path == "/api/sync/status" && method == "GET" {
+                return ["status": 200, "body": volService.getSyncStatus()]
+            }
+
+            if (path == "/api/sync/cancel" || path == "/api/sync/stop") && method == "POST" {
+                return ["status": 200, "body": volService.cancelSync()]
+            }
+
             if path == "/api/sync" && method == "POST" {
                 if volService.getIsSyncing() {
                     return ["status": 409, "body": ["error": "Sync is already running."]]

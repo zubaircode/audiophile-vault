@@ -1,7 +1,7 @@
 # Audiophile Vault (AV) — System Architecture & Technical Specification
 
 **Project Name:** `audiophile-vault`  
-**Repository Working Directory:** `pepper-music`  
+**Repository Working Directory:** `audiophile-vault`  
 **Bundle Identifier:** `com.audiophilevault.app` (`v2.0.0`, targeting macOS 14.0+ Sonoma / Sequoia)  
 **Application Type:** Native macOS Swift `WKWebView` Audiophile Music Manager, In-Process Lossless Tag/Artwork Curator, and RTOS/Android SD Card Sync Engine (~5.3 MB standalone `.app` bundle)  
 **Core Technologies:** Swift 5.9 (AppKit, WebKit, AVFoundation, ImageIO, CryptoKit, UniformTypeIdentifiers), React 18, Vite 5, Tailwind CSS 3 (Class-Based Dark Mode), TanStack Table 8
@@ -29,7 +29,7 @@ Audiophile Vault runs as a self-contained native macOS Swift application (`macos
 ### Repository Directory Tree
 
 ```
-pepper-music/
+audiophile-vault/
 ├── AUDIOPHILE_VAULT_CONTEXT.md             # Canonical system architecture specification (Markdown)
 ├── AUDIOPHILE_VAULT_CONTEXT.pdf            # Standalone PDF export of this specification
 ├── index.html                              # Vite SPA entry template (inline dark/light bootstrapper)
