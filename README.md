@@ -1,4 +1,4 @@
-# Audiophile Vault (v2.1.1)
+# Audiophile Vault (v2.1.2)
 
 **Audiophile Vault** is a lightweight (~5.5 MB), native macOS desktop application built to organize, curate, and wirelessly or physically sync DRM-free music libraries to a Digital Audio Player (DAP).
 
@@ -6,7 +6,7 @@ Built with **Swift (`AppKit` + `WKWebView` + `Network.framework`)** hosting a **
 
 ---
 
-## Core Features (v2.1.1)
+## Core Features (v2.1.2)
 
 - **DRM-Free Library Curation:**
   - Recursively scans your macOS Music source directory and copies validated, DRM-free audio (`.mp3`, `.m4a`, `.flac`, `.alac`, `.wav`, `.aiff`, `.aac`) into a single flat master vault (`~/Music/AudiophileVault/`) using Full Archive Standard naming: `{Artist} - {Album} - {DiscTrack} - {Title}.{ext}`.

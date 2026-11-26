@@ -34,6 +34,24 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         VolumeAndSyncService.shared.killActiveRsync()
     }
 
+    @objc private func handleAbout(_ sender: Any?) {
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.alignment = .center
+
+        let credits = NSAttributedString(
+            string: "Zubair Anwar\nzubaircode@icloud.com",
+            attributes: [
+                .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize),
+                .foregroundColor: NSColor.secondaryLabelColor,
+                .paragraphStyle: paragraphStyle
+            ]
+        )
+
+        NSApp.orderFrontStandardAboutPanel(options: [
+            .credits: credits
+        ])
+    }
+
     @objc private func handleReload(_ sender: Any?) {
         mainWindowController?.webViewController.reloadFrontend()
     }
@@ -51,7 +69,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         let appMenu = NSMenu()
         appMenuItem.submenu = appMenu
 
-        appMenu.addItem(withTitle: "About Audiophile Vault", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        let aboutItem = NSMenuItem(title: "About Audiophile Vault", action: #selector(handleAbout(_:)), keyEquivalent: "")
+        aboutItem.target = self
+        appMenu.addItem(aboutItem)
         appMenu.addItem(NSMenuItem.separator())
         appMenu.addItem(withTitle: "Hide Audiophile Vault", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         let hideOthers = appMenu.addItem(withTitle: "Hide Others", action: #selector(NSApplication.hideOtherApplications(_:)), keyEquivalent: "h")
