@@ -5,16 +5,15 @@ export default function SyncModeModal({
   isOpen,
   onClose,
   onConfirm,
-  initialMode = 'single',
   targetName = 'Target Device',
 }) {
-  const [selectedMode, setSelectedMode] = useState(initialMode === 'multi' ? 'multi' : 'single');
+  const [selectedMode, setSelectedMode] = useState('single');
 
   useEffect(() => {
     if (isOpen) {
-      setSelectedMode(initialMode === 'multi' ? 'multi' : 'single');
+      setSelectedMode('single');
     }
-  }, [isOpen, initialMode]);
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
@@ -92,9 +91,6 @@ export default function SyncModeModal({
               <p className="text-xs text-zinc-600 dark:text-zinc-300 mt-1 leading-relaxed">
                 Copies all tracks into a single flat <code className="px-1 py-0.5 rounded bg-zinc-200/70 dark:bg-zinc-800 font-mono text-[11px]">Music/</code> folder and writes <code className="px-1 py-0.5 rounded bg-zinc-200/70 dark:bg-zinc-800 font-mono text-[11px]">.m3u</code> playlist files.
               </p>
-              <p className="text-[11px] text-zinc-500 dark:text-zinc-400 mt-1.5">
-                <span className="font-medium text-zinc-700 dark:text-zinc-300">Best for:</span> Modern Digital Audio Players (HiBy, Android, Rockbox) that read <code className="font-mono">.m3u</code> playlists.
-              </p>
             </div>
           </button>
 
@@ -136,9 +132,6 @@ export default function SyncModeModal({
               </div>
               <p className="text-xs text-zinc-600 dark:text-zinc-300 mt-1 leading-relaxed">
                 Creates <code className="px-1 py-0.5 rounded bg-zinc-200/70 dark:bg-zinc-800 font-mono text-[11px]">Music/Library/</code> and separate <code className="px-1 py-0.5 rounded bg-zinc-200/70 dark:bg-zinc-800 font-mono text-[11px]">Music/&lt;Playlist&gt;/</code> subfolders with duplicated tracks (no <code className="px-1 py-0.5 rounded bg-zinc-200/70 dark:bg-zinc-800 font-mono text-[11px]">.m3u</code> files).
-              </p>
-              <p className="text-[11px] text-zinc-500 dark:text-zinc-400 mt-1.5">
-                <span className="font-medium text-zinc-700 dark:text-zinc-300">Best for:</span> Folder-browsing players (such as Snowsky) that do not support <code className="font-mono">.m3u</code> playlists.
               </p>
             </div>
           </button>

@@ -1622,7 +1622,6 @@ function AppContent() {
           isOpen={isSyncModeModalOpen}
           onClose={() => setIsSyncModeModalOpen(false)}
           onConfirm={handleConfirmSyncMode}
-          initialMode={config.exportPlaylistFolders ? 'multi' : 'single'}
           targetName={
             config.syncTargetMode === 'ftp'
               ? config.ftpServiceName || config.ftpManualHost || 'Wi-Fi FTP Player'
