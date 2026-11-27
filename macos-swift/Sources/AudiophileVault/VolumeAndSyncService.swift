@@ -400,64 +400,150 @@ public final class VolumeAndSyncService: @unchecked Sendable {
         try? fm.removeItem(atPath: manifestPath)
     }
 
-    private func syncLocalSnowskySubfolder(
-        destDir: String,
-        tracks: [SnowskyTrackItem],
-        processed: inout Int,
-        copied: inout Int,
-        unchanged: inout Int,
-        deleted: inout Int
-    ) {
-        let fm = FileManager.default
-        try? fm.createDirectory(atPath: destDir, withIntermediateDirectories: true)
+    private final class RsyncTracker: @unchecked Sendable {
+        private let l = NSLock()
+        private var remainder = ""
+        private var copied = 0
+        private var deleted = 0
 
-        let expectedFilenames = Set(tracks.map { $0.filename })
-        if let existing = try? fm.contentsOfDirectory(atPath: destDir) {
-            for entry in existing {
-                if getIsCancelRequested() { return }
-                if entry == ".DS_Store" {
-                    try? fm.removeItem(atPath: (destDir as NSString).appendingPathComponent(entry))
-                    continue
+        func appendAndDrainLines(_ chunk: String) -> [String] {
+            l.lock()
+            remainder += chunk
+            let parts = remainder.components(separatedBy: "\n")
+            remainder = parts.last ?? ""
+            l.unlock()
+            return Array(parts.dropLast())
+        }
+
+        func recordCopy() {
+            l.lock()
+            copied += 1
+            l.unlock()
+        }
+
+        func recordDelete() {
+            l.lock()
+            deleted += 1
+            l.unlock()
+        }
+
+        func snapshot() -> (copied: Int, deleted: Int) {
+            l.lock()
+            defer { l.unlock() }
+            return (copied, deleted)
+        }
+    }
+
+    private func executeRsync(args: [String], logPrefix: String) async throws -> (exitCode: Int32, copied: Int, deleted: Int) {
+        let tracker = RsyncTracker()
+        let exitCode: Int32 = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Int32, Error>) in
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: "/usr/bin/rsync")
+            proc.arguments = args
+            var env = ProcessInfo.processInfo.environment
+            env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+            env["COPYFILE_DISABLE"] = "1"
+            proc.environment = env
+
+            let outPipe = Pipe()
+            let errPipe = Pipe()
+            proc.standardOutput = outPipe
+            proc.standardError = errPipe
+
+            outPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
+                let data = handle.availableData
+                guard !data.isEmpty, let chunk = String(data: data, encoding: .utf8), let self = self else { return }
+
+                for rawLine in tracker.appendAndDrainLines(chunk) {
+                    let trimmed = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !trimmed.isEmpty else { continue }
+
+                    if trimmed.hasPrefix("*deleting ") {
+                        let file = String(trimmed.dropFirst("*deleting ".count)).trimmingCharacters(in: .whitespaces)
+                        tracker.recordDelete()
+                        self.updateSyncState { st in
+                            st.currentFile = file
+                            st.processedCount += 1
+                        }
+                        self.emitSyncEvent(type: "RSYNC", message: "\(logPrefix) Deleting: \(file)")
+                    } else if trimmed.hasPrefix(">f") || trimmed.hasPrefix("<f") {
+                        if let spaceIdx = trimmed.firstIndex(of: " ") {
+                            let file = String(trimmed[trimmed.index(after: spaceIdx)...]).trimmingCharacters(in: .whitespaces)
+                            tracker.recordCopy()
+                            self.updateSyncState { st in
+                                st.currentFile = file
+                                st.processedCount += 1
+                            }
+                            self.emitSyncEvent(type: "RSYNC", message: "\(logPrefix) Copying: \(file)")
+                        } else {
+                            self.emitSyncEvent(type: "RSYNC", message: "[RSYNC] \(trimmed)")
+                        }
+                    } else if !trimmed.hasPrefix("building file list") &&
+                                !trimmed.hasPrefix("sending incremental") &&
+                                !trimmed.hasPrefix("sent ") &&
+                                !trimmed.hasPrefix("total size ") &&
+                                !trimmed.hasSuffix("/") {
+                        self.emitSyncEvent(type: "RSYNC", message: "[RSYNC] \(trimmed)")
+                    }
                 }
-                if !expectedFilenames.contains(entry) {
-                    let stalePath = (destDir as NSString).appendingPathComponent(entry)
-                    try? fm.removeItem(atPath: stalePath)
+            }
+
+            errPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
+                let data = handle.availableData
+                guard !data.isEmpty, let str = String(data: data, encoding: .utf8) else { return }
+                for line in str.components(separatedBy: .newlines) {
+                    let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !trimmed.isEmpty {
+                        self?.emitSyncEvent(type: "ERROR", message: "[RSYNC STDERR] \(trimmed)")
+                    }
+                }
+            }
+
+            proc.terminationHandler = { p in
+                outPipe.fileHandleForReading.readabilityHandler = nil
+                errPipe.fileHandleForReading.readabilityHandler = nil
+                continuation.resume(returning: p.terminationStatus)
+            }
+
+            self.lock.lock()
+            self.activeProcess = proc
+            let alreadyCanceled = self.isCancelRequested
+            self.lock.unlock()
+
+            if alreadyCanceled {
+                continuation.resume(returning: 15)
+                return
+            }
+
+            do {
+                try proc.run()
+            } catch {
+                self.emitSyncEvent(type: "ERROR", message: "[ERROR] Failed to spawn /usr/bin/rsync: \(error.localizedDescription)")
+                continuation.resume(throwing: error)
+            }
+        }
+
+        let counts = tracker.snapshot()
+        return (exitCode, counts.copied, counts.deleted)
+    }
+
+    private func pruneLocalSnowskySubfolder(destDir: String, expectedFilenames: Set<String>, deleted: inout Int) {
+        let fm = FileManager.default
+        guard let existing = try? fm.contentsOfDirectory(atPath: destDir) else { return }
+        for entry in existing {
+            if getIsCancelRequested() { return }
+            if entry == ".DS_Store" || entry.hasPrefix("._") || !expectedFilenames.contains(entry) {
+                let stalePath = (destDir as NSString).appendingPathComponent(entry)
+                try? fm.removeItem(atPath: stalePath)
+                if entry != ".DS_Store" && !entry.hasPrefix("._") {
                     deleted += 1
                     emitSyncEvent(type: "RSYNC", message: "[SNOWSKY SYNC] Deleted stale: \(entry)")
                 }
             }
         }
-
-        for item in tracks {
-            if getIsCancelRequested() { return }
-            processed += 1
-            let destPath = (destDir as NSString).appendingPathComponent(item.filename)
-            updateSyncState { st in
-                st.currentFile = item.filename
-                st.processedCount = processed
-            }
-
-            if let destAttrs = try? fm.attributesOfItem(atPath: destPath) {
-                let destSize = (destAttrs[.size] as? NSNumber)?.int64Value ?? -2
-                let destMtime = (destAttrs[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
-                if item.size > 0 && destSize == item.size && abs(item.mtime - destMtime) <= 2.0 {
-                    unchanged += 1
-                    continue
-                }
-                try? fm.removeItem(atPath: destPath)
-            }
-
-            emitSyncEvent(type: "RSYNC", message: "[SNOWSKY SYNC] Copying: \(item.filename)")
-            do {
-                try fm.copyItem(atPath: item.srcPath, toPath: destPath)
-                copied += 1
-            } catch {
-                emitSyncEvent(type: "ERROR", message: "[SNOWSKY SYNC ERROR] Failed to copy \"\(item.filename)\": \(error.localizedDescription)")
-            }
-        }
     }
 
-    private func runSnowskySdSync(targetMusicDir: String, vaultDir: String, startTime: Date) -> String {
+    private func runSnowskySdSync(targetMusicDir: String, vaultDir: String, startTime: Date) async throws -> String {
         let fm = FileManager.default
         let plan = buildSnowskyPlan(vaultDir: vaultDir)
         let totalOps = plan.totalOperations
@@ -468,26 +554,57 @@ public final class VolumeAndSyncService: @unchecked Sendable {
             st.processedCount = 0
         }
 
-        emitSyncEvent(type: "RSYNC", message: "[SNOWSKY SYNC] Starting SD Card sync -> \(targetMusicDir) (Library/ + Playlist subfolders, no .m3u files)")
+        emitSyncEvent(type: "RSYNC", message: "[SNOWSKY SYNC] Starting SD Card sync -> \(targetMusicDir) (Library/ + Playlist subfolders via rsync, no .m3u files)")
 
-        var processed = 0
         var copied = 0
-        var unchanged = 0
         var deleted = 0
+        var completedOps = 0
 
-        // 1. Sync Music/Library/ with all vault tracks
+        // 1. Sync Music/Library/ with all vault tracks via /usr/bin/rsync (COPYFILE_DISABLE=1)
         let libraryDir = (targetMusicDir as NSString).appendingPathComponent("Library")
-        emitSyncEvent(type: "RSYNC", message: "[SNOWSKY SYNC] Syncing Library (\(plan.libraryTracks.count) tracks) -> Music/Library/")
-        syncLocalSnowskySubfolder(
-            destDir: libraryDir,
-            tracks: plan.libraryTracks,
-            processed: &processed,
-            copied: &copied,
-            unchanged: &unchanged,
-            deleted: &deleted
-        )
+        let libraryDirSlash = libraryDir.hasSuffix("/") ? libraryDir : "\(libraryDir)/"
+        try? fm.createDirectory(atPath: libraryDirSlash, withIntermediateDirectories: true)
 
-        // 2. Sync Music/<SanitizedPlaylistName>/ for each playlist
+        emitSyncEvent(type: "RSYNC", message: "[SNOWSKY SYNC] Syncing Library (\(plan.libraryTracks.count) tracks) -> Music/Library/")
+        let libArgs = [
+            "-avu",
+            "--delete",
+            "--delete-excluded",
+            "--itemize-changes",
+            "--modify-window=1",
+            "--exclude=.vault_index.json",
+            "--exclude=.DS_Store",
+            "--exclude=._*",
+            "--exclude=*.m3u",
+            "--exclude=*.m3u8",
+            vaultDir,
+            libraryDirSlash
+        ]
+        let libRes = try await executeRsync(args: libArgs, logPrefix: "[SNOWSKY SYNC]")
+        copied += libRes.copied
+        deleted += libRes.deleted
+
+        if getIsCancelRequested() || libRes.exitCode == 15 || libRes.exitCode == 20 {
+            let elapsed = String(format: "%.1f", Date().timeIntervalSince(startTime))
+            emitSyncEvent(
+                type: "DONE",
+                message: "[SNOWSKY SYNC] Canceled cleanly by user after \(elapsed)s (\(copied) copied, \(deleted) removed before stop)."
+            )
+            return "canceled"
+        }
+        if libRes.exitCode != 0 {
+            let msg = "[ERROR] [SNOWSKY SYNC] rsync exited with code \(libRes.exitCode) on Library/"
+            emitSyncEvent(type: "ERROR", message: msg)
+            throw NSError(domain: "VolumeAndSyncService", code: Int(libRes.exitCode), userInfo: [NSLocalizedDescriptionKey: msg])
+        }
+        completedOps += plan.libraryTracks.count
+        updateSyncState { st in
+            if st.processedCount < completedOps {
+                st.processedCount = completedOps
+            }
+        }
+
+        // 2. Sync Music/<SanitizedPlaylistName>/ for each playlist via /usr/bin/rsync --files-from
         if !getIsCancelRequested() {
             updateSyncState { st in
                 st.phase = "playlists"
@@ -496,19 +613,58 @@ public final class VolumeAndSyncService: @unchecked Sendable {
             for pl in plan.playlists {
                 if getIsCancelRequested() { break }
                 let plDir = (targetMusicDir as NSString).appendingPathComponent(pl.folderName)
+                let plDirSlash = plDir.hasSuffix("/") ? plDir : "\(plDir)/"
+                try? fm.createDirectory(atPath: plDirSlash, withIntermediateDirectories: true)
+
                 emitSyncEvent(type: "PLAYLIST", message: "[SNOWSKY SYNC] Syncing Playlist \"\(pl.rawName)\" (\(pl.tracks.count) tracks) -> Music/\(pl.folderName)/")
-                syncLocalSnowskySubfolder(
-                    destDir: plDir,
-                    tracks: pl.tracks,
-                    processed: &processed,
-                    copied: &copied,
-                    unchanged: &unchanged,
-                    deleted: &deleted
-                )
+
+                let expected = Set(pl.tracks.map { $0.filename })
+                pruneLocalSnowskySubfolder(destDir: plDir, expectedFilenames: expected, deleted: &deleted)
+
+                if !pl.tracks.isEmpty && !getIsCancelRequested() {
+                    let filesFromPath = (NSTemporaryDirectory() as NSString)
+                        .appendingPathComponent("av_snowsky_\(UUID().uuidString).txt")
+                    let listContent = pl.tracks.map { $0.filename }.joined(separator: "\n") + "\n"
+                    try? listContent.write(toFile: filesFromPath, atomically: true, encoding: .utf8)
+                    defer { try? fm.removeItem(atPath: filesFromPath) }
+
+                    let plArgs = [
+                        "-avu",
+                        "--itemize-changes",
+                        "--modify-window=1",
+                        "--files-from=\(filesFromPath)",
+                        vaultDir,
+                        plDirSlash
+                    ]
+                    let plRes = try await executeRsync(args: plArgs, logPrefix: "[SNOWSKY SYNC]")
+                    copied += plRes.copied
+                    deleted += plRes.deleted
+
+                    if getIsCancelRequested() || plRes.exitCode == 15 || plRes.exitCode == 20 {
+                        let elapsed = String(format: "%.1f", Date().timeIntervalSince(startTime))
+                        emitSyncEvent(
+                            type: "DONE",
+                            message: "[SNOWSKY SYNC] Canceled cleanly by user after \(elapsed)s (\(copied) copied, \(deleted) removed before stop)."
+                        )
+                        return "canceled"
+                    }
+                    if plRes.exitCode != 0 {
+                        let msg = "[ERROR] [SNOWSKY SYNC] rsync exited with code \(plRes.exitCode) on Music/\(pl.folderName)/"
+                        emitSyncEvent(type: "ERROR", message: msg)
+                        throw NSError(domain: "VolumeAndSyncService", code: Int(plRes.exitCode), userInfo: [NSLocalizedDescriptionKey: msg])
+                    }
+                }
+
+                completedOps += pl.tracks.count
+                updateSyncState { st in
+                    if st.processedCount < completedOps {
+                        st.processedCount = completedOps
+                    }
+                }
             }
         }
 
-        // 3. Prune stale files/folders directly inside Music/ (e.g. old flat tracks, .m3u files, deleted playlists)
+        // 3. Prune stale files/folders directly inside Music/ (e.g. old flat tracks, .m3u files, ._*, deleted playlists)
         if !getIsCancelRequested() {
             updateSyncState { st in
                 st.phase = "cleaning"
@@ -521,7 +677,7 @@ public final class VolumeAndSyncService: @unchecked Sendable {
             if let topEntries = try? fm.contentsOfDirectory(atPath: targetMusicDir) {
                 for entry in topEntries {
                     if getIsCancelRequested() { break }
-                    if entry == ".DS_Store" {
+                    if entry == ".DS_Store" || entry.hasPrefix("._") {
                         try? fm.removeItem(atPath: (targetMusicDir as NSString).appendingPathComponent(entry))
                         continue
                     }
@@ -552,11 +708,12 @@ public final class VolumeAndSyncService: @unchecked Sendable {
         if getIsCancelRequested() {
             emitSyncEvent(
                 type: "DONE",
-                message: "[SNOWSKY SYNC] Canceled cleanly by user after \(elapsed)s (\(copied) copied, \(unchanged) unchanged, \(deleted) removed before stop)."
+                message: "[SNOWSKY SYNC] Canceled cleanly by user after \(elapsed)s (\(copied) copied, \(deleted) removed before stop)."
             )
             return "canceled"
         }
 
+        let unchanged = max(0, totalOps - copied)
         emitSyncEvent(
             type: "DONE",
             message: "[SNOWSKY SYNC] Complete: \(copied) copied, \(unchanged) unchanged, \(deleted) removed across Library and \(plan.playlists.count) playlists in \(elapsed)s."
@@ -625,11 +782,18 @@ public final class VolumeAndSyncService: @unchecked Sendable {
         try? FileManager.default.createDirectory(atPath: targetMusicDir, withIntermediateDirectories: true)
 
         if lib.config.exportPlaylistFolders {
-            finalPhase = runSnowskySdSync(
-                targetMusicDir: targetMusicDir,
-                vaultDir: normalizedVaultDir,
-                startTime: startTime
-            )
+            do {
+                finalPhase = try await runSnowskySdSync(
+                    targetMusicDir: targetMusicDir,
+                    vaultDir: normalizedVaultDir,
+                    startTime: startTime
+                )
+            } catch {
+                if finalPhase != "canceled" {
+                    finalPhase = "error"
+                }
+                throw error
+            }
             return
         }
 
@@ -658,6 +822,7 @@ public final class VolumeAndSyncService: @unchecked Sendable {
             "--modify-window=1",
             "--exclude=.vault_index.json",
             "--exclude=.DS_Store",
+            "--exclude=._*",
             normalizedVaultDir,
             targetMusicDir
         ]
@@ -665,132 +830,12 @@ public final class VolumeAndSyncService: @unchecked Sendable {
         emitSyncEvent(type: "RSYNC", message: "[SYNC] Starting SD Card sync -> \(targetMusicDir)")
         emitSyncEvent(type: "RSYNC", message: "[SYNC] Scanning local library (\(trackCount) tracks, \(playlistCount) playlists)...")
 
-        final class RsyncTracker: @unchecked Sendable {
-            private let l = NSLock()
-            private var remainder = ""
-            private var copied = 0
-            private var deleted = 0
-
-            func appendAndDrainLines(_ chunk: String) -> [String] {
-                l.lock()
-                remainder += chunk
-                let parts = remainder.components(separatedBy: "\n")
-                remainder = parts.last ?? ""
-                l.unlock()
-                return Array(parts.dropLast())
-            }
-
-            func recordCopy() {
-                l.lock()
-                copied += 1
-                l.unlock()
-            }
-
-            func recordDelete() {
-                l.lock()
-                deleted += 1
-                l.unlock()
-            }
-
-            func snapshot() -> (copied: Int, deleted: Int) {
-                l.lock()
-                defer { l.unlock() }
-                return (copied, deleted)
-            }
-        }
-        let tracker = RsyncTracker()
-
+        let counts: (copied: Int, deleted: Int)
         do {
-            let exitCode: Int32 = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Int32, Error>) in
-                let proc = Process()
-                proc.executableURL = URL(fileURLWithPath: "/usr/bin/rsync")
-                proc.arguments = rsyncArgs
-                var env = ProcessInfo.processInfo.environment
-                env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-                env["COPYFILE_DISABLE"] = "1"
-                proc.environment = env
-
-                let outPipe = Pipe()
-                let errPipe = Pipe()
-                proc.standardOutput = outPipe
-                proc.standardError = errPipe
-
-                outPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
-                    let data = handle.availableData
-                    guard !data.isEmpty, let chunk = String(data: data, encoding: .utf8), let self = self else { return }
-
-                    for rawLine in tracker.appendAndDrainLines(chunk) {
-                        let trimmed = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
-                        guard !trimmed.isEmpty else { continue }
-
-                        if trimmed.hasPrefix("*deleting ") {
-                            let file = String(trimmed.dropFirst("*deleting ".count)).trimmingCharacters(in: .whitespaces)
-                            tracker.recordDelete()
-                            self.updateSyncState { st in
-                                st.currentFile = file
-                                st.processedCount += 1
-                            }
-                            self.emitSyncEvent(type: "RSYNC", message: "[SYNC] Deleting: \(file)")
-                        } else if trimmed.hasPrefix(">f") || trimmed.hasPrefix("<f") {
-                            if let spaceIdx = trimmed.firstIndex(of: " ") {
-                                let file = String(trimmed[trimmed.index(after: spaceIdx)...]).trimmingCharacters(in: .whitespaces)
-                                tracker.recordCopy()
-                                self.updateSyncState { st in
-                                    st.currentFile = file
-                                    st.processedCount += 1
-                                }
-                                self.emitSyncEvent(type: "RSYNC", message: "[SYNC] Copying: \(file)")
-                            } else {
-                                self.emitSyncEvent(type: "RSYNC", message: "[RSYNC] \(trimmed)")
-                            }
-                        } else if !trimmed.hasPrefix("building file list") &&
-                                    !trimmed.hasPrefix("sending incremental") &&
-                                    !trimmed.hasPrefix("sent ") &&
-                                    !trimmed.hasPrefix("total size ") &&
-                                    !trimmed.hasSuffix("/") {
-                            self.emitSyncEvent(type: "RSYNC", message: "[RSYNC] \(trimmed)")
-                        }
-                    }
-                }
-
-                errPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
-                    let data = handle.availableData
-                    guard !data.isEmpty, let str = String(data: data, encoding: .utf8) else { return }
-                    for line in str.components(separatedBy: .newlines) {
-                        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-                        if !trimmed.isEmpty {
-                            self?.emitSyncEvent(type: "ERROR", message: "[RSYNC STDERR] \(trimmed)")
-                        }
-                    }
-                }
-
-                proc.terminationHandler = { p in
-                    outPipe.fileHandleForReading.readabilityHandler = nil
-                    errPipe.fileHandleForReading.readabilityHandler = nil
-                    continuation.resume(returning: p.terminationStatus)
-                }
-
-                self.lock.lock()
-                self.activeProcess = proc
-                let alreadyCanceled = self.isCancelRequested
-                self.lock.unlock()
-
-                if alreadyCanceled {
-                    continuation.resume(returning: 15)
-                    return
-                }
-
-                do {
-                    try proc.run()
-                } catch {
-                    self.emitSyncEvent(type: "ERROR", message: "[ERROR] Failed to spawn /usr/bin/rsync: \(error.localizedDescription)")
-                    continuation.resume(throwing: error)
-                }
-            }
-
-            let counts = tracker.snapshot()
+            let res = try await executeRsync(args: rsyncArgs, logPrefix: "[SYNC]")
+            counts = (res.copied, res.deleted)
             let elapsed = String(format: "%.1f", Date().timeIntervalSince(startTime))
-            if getIsCancelRequested() || exitCode == 15 || exitCode == 20 {
+            if getIsCancelRequested() || res.exitCode == 15 || res.exitCode == 20 {
                 finalPhase = "canceled"
                 emitSyncEvent(
                     type: "DONE",
@@ -799,11 +844,11 @@ public final class VolumeAndSyncService: @unchecked Sendable {
                 return
             }
 
-            if exitCode != 0 {
+            if res.exitCode != 0 {
                 finalPhase = "error"
-                let msg = "[ERROR] rsync exited with code \(exitCode)"
+                let msg = "[ERROR] rsync exited with code \(res.exitCode)"
                 emitSyncEvent(type: "ERROR", message: msg)
-                throw NSError(domain: "VolumeAndSyncService", code: Int(exitCode), userInfo: [NSLocalizedDescriptionKey: msg])
+                throw NSError(domain: "VolumeAndSyncService", code: Int(res.exitCode), userInfo: [NSLocalizedDescriptionKey: msg])
             }
         } catch {
             if finalPhase != "canceled" {
@@ -818,7 +863,6 @@ public final class VolumeAndSyncService: @unchecked Sendable {
             cleanupLegacyRootSnowskyFolders(sdRoot: sdRoot)
         }
 
-        let counts = tracker.snapshot()
         let elapsed = String(format: "%.1f", Date().timeIntervalSince(startTime))
         let unchangedCount = max(0, totalLocal - counts.copied)
         emitSyncEvent(
