@@ -9,7 +9,6 @@ import {
   Loader2,
   Sun,
   Moon,
-  Snowflake,
   Wifi,
 } from 'lucide-react';
 import { formatBytes } from './UnifiedControlBar.jsx';
@@ -33,8 +32,6 @@ const Header = memo(function Header({
   onStartArtworkFetch,
   onStopArtworkFetch,
   onOpenSettings,
-  exportPlaylistFolders = false,
-  onToggleExportPlaylistFolders,
 }) {
   const { theme, toggleTheme } = useTheme();
 
@@ -304,33 +301,7 @@ const Header = memo(function Header({
             );
           })()}
 
-          {/* 5. SNOWSKY Mode (Playlist Folder Export) Toggle Button */}
-          <button
-            type="button"
-            role="switch"
-            data-no-drag="true"
-            style={{ WebkitAppRegion: 'no-drag' }}
-            aria-checked={exportPlaylistFolders}
-            disabled={isSyncing}
-            onClick={onToggleExportPlaylistFolders}
-            title={
-              isSyncing
-                ? 'Unavailable while sync is in progress'
-                : `Snowsky Mode: Folder-per-playlist mode (copies tracks into Library/ and Playlist subfolders without .m3u files) — ${
-                    exportPlaylistFolders ? 'Active' : 'Inactive'
-                  }`
-            }
-            aria-label="Snowsky Mode: Folder-per-playlist mode (copies tracks into Library/ and Playlist subfolders without .m3u files)"
-            className={`h-14 w-14 rounded-lg flex items-center justify-center transition-colors shadow-xs dark:shadow-none shrink-0 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer ${
-              exportPlaylistFolders
-                ? 'bg-sky-500/15 border border-sky-500/50 text-sky-600 dark:text-sky-400 hover:bg-sky-500/25'
-                : 'bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 text-zinc-500 dark:text-zinc-400 hover:border-zinc-300 dark:hover:border-zinc-700 hover:text-zinc-700 dark:hover:text-zinc-200'
-            }`}
-          >
-            <Snowflake className="w-5 h-5" />
-          </button>
-
-          {/* 6. Settings Trigger Button (h-14 matching block) */}
+          {/* 5. Settings Trigger Button (h-14 matching block) */}
           <button
             type="button"
             data-no-drag="true"

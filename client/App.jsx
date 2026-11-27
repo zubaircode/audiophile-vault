@@ -6,6 +6,7 @@ import {
 import Header from './components/Header.jsx';
 import UnifiedControlBar, { formatBytes } from './components/UnifiedControlBar.jsx';
 import SettingsModal from './components/SettingsModal.jsx';
+import SyncModeModal from './components/SyncModeModal.jsx';
 import Sidebar from './components/Sidebar.jsx';
 import TrackTable from './components/TrackTable.jsx';
 import LogViewer from './components/LogViewer.jsx';
@@ -164,6 +165,7 @@ function AppContent() {
 
   // Settings Modal state
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isSyncModeModalOpen, setIsSyncModeModalOpen] = useState(false);
 
   const showToast = useCallback((message, type = 'success') => {
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
@@ -1193,30 +1195,6 @@ function AppContent() {
     }
   };
 
-  const handleToggleExportPlaylistFolders = useCallback(async () => {
-    if (isSyncing) return;
-    const nextVal = !config.exportPlaylistFolders;
-    setConfig((prev) => ({ ...prev, exportPlaylistFolders: nextVal }));
-    try {
-      const res = await fetch(`${API_BASE}/api/config`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ exportPlaylistFolders: nextVal }),
-      });
-      if (!res.ok) throw new Error('Failed to update config');
-      const updated = await res.json();
-      setConfig((prev) => ({ ...prev, ...updated }));
-      showToast(
-        nextVal
-          ? 'SNOWSKY Mode enabled: Tracks will sync into Library/ and Playlist subfolders without .m3u files'
-          : 'SNOWSKY Mode disabled: Flat Music/ layout with .m3u playlists'
-      );
-    } catch (err) {
-      setConfig((prev) => ({ ...prev, exportPlaylistFolders: !nextVal }));
-      showToast('Failed to toggle SNOWSKY Mode', 'error');
-    }
-  }, [config.exportPlaylistFolders, showToast]);
-
   const handleStartIngest = async () => {
     setIsConsoleOpen(true);
     setIsIngesting(true);
@@ -1246,9 +1224,23 @@ function AppContent() {
     }
   };
 
-  const handleStartSync = async () => {
+  const handleStartSync = () => {
+    if (isSyncing) {
+      handleCancelSync();
+      return;
+    }
     const isFtpMode = config.syncTargetMode === 'ftp';
     if (!isFtpMode && !selectedVolumePath) return;
+    setIsSyncModeModalOpen(true);
+  };
+
+  const handleConfirmSyncMode = async (layoutMode) => {
+    setIsSyncModeModalOpen(false);
+    const isMulti = layoutMode === 'multi';
+    const isFtpMode = config.syncTargetMode === 'ftp';
+    if (!isFtpMode && !selectedVolumePath) return;
+
+    setConfig((prev) => ({ ...prev, exportPlaylistFolders: isMulti }));
     setIsConsoleOpen(true);
     setSyncState((prev) => ({
       ...prev,
@@ -1265,8 +1257,8 @@ function AppContent() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(
           isFtpMode
-            ? { syncTargetMode: 'ftp' }
-            : { syncTargetMode: 'sd', volumePath: selectedVolumePath }
+            ? { syncTargetMode: 'ftp', syncLayoutMode: layoutMode, exportPlaylistFolders: isMulti }
+            : { syncTargetMode: 'sd', volumePath: selectedVolumePath, syncLayoutMode: layoutMode, exportPlaylistFolders: isMulti }
         ),
       });
       if (!res.ok) {
@@ -1527,8 +1519,6 @@ function AppContent() {
         onStartArtworkFetch={handleStartArtworkFetch}
         onStopArtworkFetch={handleStopArtworkFetch}
         onOpenSettings={handleOpenSettings}
-        exportPlaylistFolders={Boolean(config.exportPlaylistFolders)}
-        onToggleExportPlaylistFolders={handleToggleExportPlaylistFolders}
       />
 
       {/* 2. UNIFIED PLAYBACK & ACTION TOOLBAR */}
@@ -1626,6 +1616,19 @@ function AppContent() {
           isFetchingArtwork={isFetchingArtwork}
         />
       )}
+
+        {/* PRE-SYNC LAYOUT MODE CONFIRMATION MODAL */}
+        <SyncModeModal
+          isOpen={isSyncModeModalOpen}
+          onClose={() => setIsSyncModeModalOpen(false)}
+          onConfirm={handleConfirmSyncMode}
+          initialMode={config.exportPlaylistFolders ? 'multi' : 'single'}
+          targetName={
+            config.syncTargetMode === 'ftp'
+              ? config.ftpServiceName || config.ftpManualHost || 'Wi-Fi FTP Player'
+              : activeVolume?.name || selectedVolumePath || 'SD Card'
+          }
+        />
 
         {/* DIRECTORY & TARGET SD CARD CONFIGURATION MODAL */}
         <SettingsModal

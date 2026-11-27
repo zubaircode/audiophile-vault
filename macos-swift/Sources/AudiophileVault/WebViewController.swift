@@ -593,7 +593,20 @@ public final class WebViewController: NSViewController, WKScriptMessageHandlerWi
                     return ["status": 409, "body": ["error": "Sync is already running."]]
                 }
                 let mode = (body?["syncTargetMode"] as? String) ?? lib.config.syncTargetMode
+                let explicitMulti: Bool? = {
+                    if let layoutMode = body?["syncLayoutMode"] as? String {
+                        return layoutMode == "multi"
+                    }
+                    if let exp = body?["exportPlaylistFolders"] as? Bool {
+                        return exp
+                    }
+                    return nil
+                }()
+
                 if mode == "ftp" {
+                    if let exp = explicitMulti {
+                        lib.updateConfig(["exportPlaylistFolders": exp])
+                    }
                     Task.detached {
                         try? await VolumeAndSyncService.shared.runFtpSync()
                     }
@@ -611,7 +624,11 @@ public final class WebViewController: NSViewController, WKScriptMessageHandlerWi
                 if volumePath.isEmpty {
                     return ["status": 400, "body": ["error": "Please select a target SD card volume first."]]
                 }
-                lib.updateConfig(["sdCardPath": volumePath])
+                var cfgUpdates: [String: Any] = ["sdCardPath": volumePath]
+                if let exp = explicitMulti {
+                    cfgUpdates["exportPlaylistFolders"] = exp
+                }
+                lib.updateConfig(cfgUpdates)
                 let targetMusicDir = volService.resolveTargetMusicDir(volumePath)
                 Task.detached {
                     try? await VolumeAndSyncService.shared.runRsyncToSdCard(requestedVolumePath: volumePath)

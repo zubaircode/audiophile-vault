@@ -48,14 +48,14 @@ audiophile-vault/
 │       ├── LibraryService.swift            # .vault_index.json atomic store, DRM-free ingestion, SHA-256 deduplication
 │       ├── ArtworkAndTagService.swift      # Zero-CLI container tagger/embedder & scored multi-provider artwork engine
 │       ├── PlaylistService.swift           # Universal CRLF .m3u playlist generator & CRUD manager
-│       └── VolumeAndSyncService.swift      # /Volumes/ inspector, /usr/bin/rsync sync, SNOWSKY folder export, NSWorkspace eject
+│       └── VolumeAndSyncService.swift      # /Volumes/ inspector, /usr/bin/rsync sync (Single/Multi Folder), NSWorkspace eject
 │
 ├── client/                                 # React 18 + Tailwind CSS frontend
 │   ├── main.jsx                            # React root mount
 │   ├── App.jsx                             # Root coordinator, SSE listeners, toast/console state, modal orchestration
 │   ├── index.css                           # Global scrollbar, View Transitions CSS, and native window drag exclusions
 │   ├── components/
-│   │   ├── Header.jsx                      # Bar 1: Top drag bar, theme switch, stats, SNOWSKY mode toggle, settings trigger
+│   │   ├── Header.jsx                      # Bar 1: Top drag bar, theme switch, stats, settings trigger
 │   │   ├── UnifiedControlBar.jsx           # Bar 2: Now Playing banner, transport controls, target SD selector, Ingest/Sync/Eject
 │   │   ├── TrackTable.jsx                  # Virtualized track table with locked 56px artwork column & resizable text columns
 │   │   ├── Sidebar.jsx                     # Library & playlist navigation, drag-and-drop reordering, CRUD
@@ -98,7 +98,7 @@ Frontend components communicate with the Swift host over standard `fetch('/api/.
 | `POST` | `/api/artwork/stop` | Cancels active artwork backfill. |
 | `GET` / `POST` / `PUT` / `DELETE` | `/api/playlists*` | Full playlist CRUD, duplication, track add/remove, and drag-and-drop track reordering; syncs `.m3u` files on disk. |
 | `POST` | `/api/import` | Starts recursive DRM-free ingestion pipeline (`LibraryService.runIngestionPipeline`). |
-| `POST` | `/api/sync` | Starts incremental `/usr/bin/rsync` sync + `.m3u` export (+ SNOWSKY folder export when enabled). |
+| `POST` | `/api/sync` | Starts incremental `/usr/bin/rsync` sync in **Single Folder** or **Multi Folder** mode. |
 | `POST` | `/api/eject` | Safely unmounts and ejects the target volume via `NSWorkspace.shared.unmountAndEjectDevice(at:)`. |
 | `GET` (SSE) | `/api/import/progress`, `/api/artwork/progress`, `/api/sync/progress` | Real-time Activity Console event streams pushed via `SSEEventBus`. |
 
@@ -203,7 +203,7 @@ The canonical index is stored atomically (write `.tmp` + rename) at `~/Music/Aud
 
 ---
 
-## 5. Universal `.m3u` Playlist Export & SNOWSKY Mode
+## 5. Universal `.m3u` Playlist Export & Single / Multi Folder Sync Modes
 
 ### Standardized `.m3u` Format (`PlaylistService.swift`)
 All playlist exports are standardized strictly on `.m3u` (legacy `.m3u8` toggles removed) for maximum compatibility across Android players (HiBy, Poweramp) and embedded RTOS DAPs (Snowsky Echo Nano):
@@ -216,8 +216,8 @@ All playlist exports are standardized strictly on `.m3u` (legacy `.m3u8` toggles
    Queen - Greatest Hits - 101 - Bohemian Rhapsody.m4a\r\n
    ```
 
-### SNOWSKY Mode (`exportPlaylistFolders`)
-- **Auto-Detection:** Selecting a volume whose name contains `SNOWSKY` automatically enables `exportPlaylistFolders = true` (with manual override respected via `snowskyModeUserOverride` and the `Snowflake` toggle card in `Header.jsx`).
+### Single Folder vs. Multi Folder Mode (`exportPlaylistFolders`)
+- **Pre-Sync Selection Modal (`SyncModeModal.jsx`):** Clicking Sync opens a confirmation modal requiring an explicit choice between **Single Folder** (flat `Music/` + `.m3u` playlists) and **Multi Folder** (`Music/Library/` + `Music/<Playlist>/` subfolders without `.m3u` files).
 - **Folder Export (`syncPlaylistFolders`):** During SD card sync, each playlist is exported as a root-level folder on the SD card containing physical copies of its tracks prefixed with their 1-based playback index (`001 - {filename}`) so RTOS folder-based players play playlists in exact sequential order. When disabled, managed playlist folders are cleanly removed from the SD card.
 
 ---
@@ -225,7 +225,7 @@ All playlist exports are standardized strictly on `.m3u` (legacy `.m3u8` toggles
 ## 6. UI/UX Conventions & Design Standards
 
 1. **Two-Bar Header System:**
-   - **Bar 1 (`Header.jsx`):** `pl-20` traffic-light clearance (non-fullscreen), native window drag region (`data-window-drag="true"`), and uniform `h-14` (`56px`) control/stat cards with `[data-no-drag="true"]`: Theme Switch, Vault Tracks, Library/Playlist Cover Art (with missing-art filter and batch fetch), Vault Size, Target SD, SNOWSKY Mode toggle, and Settings trigger.
+   - **Bar 1 (`Header.jsx`):** `pl-20` traffic-light clearance (non-fullscreen), native window drag region (`data-window-drag="true"`), and uniform `h-14` (`56px`) control/stat cards with `[data-no-drag="true"]`: Theme Switch, Vault Tracks, Library/Playlist Cover Art (with missing-art filter and batch fetch), Vault Size, Target SD, and Settings trigger.
    - **Bar 2 (`UnifiedControlBar.jsx`):** Interactive **Now Playing** readout (click to trigger **Jump to Now Playing**), audio transport controls, seek scrubber, volume slider, Target SD volume selector, **Ingest**, **Sync to SD**, and **Eject**.
 2. **Track Table (`TrackTable.jsx`):**
    - Virtualized TanStack Table with a **permanently locked `56px` Cover Art column** (`w-[56px] min-w-[56px] max-w-[56px] shrink-0`, non-reorderable, non-resizable) and drag-resizable text columns.

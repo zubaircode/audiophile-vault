@@ -394,7 +394,7 @@ public final class VolumeAndSyncService: @unchecked Sendable {
             var isDir: ObjCBool = false
             if fm.fileExists(atPath: folderPath, isDirectory: &isDir), isDir.boolValue {
                 try? fm.removeItem(atPath: folderPath)
-                emitSyncEvent(type: "PLAYLIST", message: "[SNOWSKY SYNC] Removed legacy root playlist folder: /\(folder)/")
+                emitSyncEvent(type: "PLAYLIST", message: "[SYNC - Multi Folder] Removed legacy root playlist folder: /\(folder)/")
             }
         }
         try? fm.removeItem(atPath: manifestPath)
@@ -537,7 +537,7 @@ public final class VolumeAndSyncService: @unchecked Sendable {
                 try? fm.removeItem(atPath: stalePath)
                 if entry != ".DS_Store" && !entry.hasPrefix("._") {
                     deleted += 1
-                    emitSyncEvent(type: "RSYNC", message: "[SNOWSKY SYNC] Deleted stale: \(entry)")
+                    emitSyncEvent(type: "RSYNC", message: "[SYNC - Multi Folder] Deleted stale: \(entry)")
                 }
             }
         }
@@ -554,7 +554,7 @@ public final class VolumeAndSyncService: @unchecked Sendable {
             st.processedCount = 0
         }
 
-        emitSyncEvent(type: "RSYNC", message: "[SNOWSKY SYNC] Starting SD Card sync -> \(targetMusicDir) (Library/ + Playlist subfolders via rsync, no .m3u files)")
+        emitSyncEvent(type: "RSYNC", message: "[SYNC - Multi Folder] Starting SD Card sync -> \(targetMusicDir) (Library/ + Playlist subfolders via rsync, no .m3u files)")
 
         var copied = 0
         var deleted = 0
@@ -565,7 +565,7 @@ public final class VolumeAndSyncService: @unchecked Sendable {
         let libraryDirSlash = libraryDir.hasSuffix("/") ? libraryDir : "\(libraryDir)/"
         try? fm.createDirectory(atPath: libraryDirSlash, withIntermediateDirectories: true)
 
-        emitSyncEvent(type: "RSYNC", message: "[SNOWSKY SYNC] Syncing Library (\(plan.libraryTracks.count) tracks) -> Music/Library/")
+        emitSyncEvent(type: "RSYNC", message: "[SYNC - Multi Folder] Syncing Library (\(plan.libraryTracks.count) tracks) -> Music/Library/")
         let libArgs = [
             "-avu",
             "--delete",
@@ -580,7 +580,7 @@ public final class VolumeAndSyncService: @unchecked Sendable {
             vaultDir,
             libraryDirSlash
         ]
-        let libRes = try await executeRsync(args: libArgs, logPrefix: "[SNOWSKY SYNC]")
+        let libRes = try await executeRsync(args: libArgs, logPrefix: "[SYNC - Multi Folder]")
         copied += libRes.copied
         deleted += libRes.deleted
 
@@ -588,12 +588,12 @@ public final class VolumeAndSyncService: @unchecked Sendable {
             let elapsed = String(format: "%.1f", Date().timeIntervalSince(startTime))
             emitSyncEvent(
                 type: "DONE",
-                message: "[SNOWSKY SYNC] Canceled cleanly by user after \(elapsed)s (\(copied) copied, \(deleted) removed before stop)."
+                message: "[SYNC - Multi Folder] Canceled cleanly by user after \(elapsed)s (\(copied) copied, \(deleted) removed before stop)."
             )
             return "canceled"
         }
         if libRes.exitCode != 0 {
-            let msg = "[ERROR] [SNOWSKY SYNC] rsync exited with code \(libRes.exitCode) on Library/"
+            let msg = "[ERROR] [SYNC - Multi Folder] rsync exited with code \(libRes.exitCode) on Library/"
             emitSyncEvent(type: "ERROR", message: msg)
             throw NSError(domain: "VolumeAndSyncService", code: Int(libRes.exitCode), userInfo: [NSLocalizedDescriptionKey: msg])
         }
@@ -616,7 +616,7 @@ public final class VolumeAndSyncService: @unchecked Sendable {
                 let plDirSlash = plDir.hasSuffix("/") ? plDir : "\(plDir)/"
                 try? fm.createDirectory(atPath: plDirSlash, withIntermediateDirectories: true)
 
-                emitSyncEvent(type: "PLAYLIST", message: "[SNOWSKY SYNC] Syncing Playlist \"\(pl.rawName)\" (\(pl.tracks.count) tracks) -> Music/\(pl.folderName)/")
+                emitSyncEvent(type: "PLAYLIST", message: "[SYNC - Multi Folder] Syncing Playlist \"\(pl.rawName)\" (\(pl.tracks.count) tracks) -> Music/\(pl.folderName)/")
 
                 let expected = Set(pl.tracks.map { $0.filename })
                 pruneLocalSnowskySubfolder(destDir: plDir, expectedFilenames: expected, deleted: &deleted)
@@ -636,7 +636,7 @@ public final class VolumeAndSyncService: @unchecked Sendable {
                         vaultDir,
                         plDirSlash
                     ]
-                    let plRes = try await executeRsync(args: plArgs, logPrefix: "[SNOWSKY SYNC]")
+                    let plRes = try await executeRsync(args: plArgs, logPrefix: "[SYNC - Multi Folder]")
                     copied += plRes.copied
                     deleted += plRes.deleted
 
@@ -644,12 +644,12 @@ public final class VolumeAndSyncService: @unchecked Sendable {
                         let elapsed = String(format: "%.1f", Date().timeIntervalSince(startTime))
                         emitSyncEvent(
                             type: "DONE",
-                            message: "[SNOWSKY SYNC] Canceled cleanly by user after \(elapsed)s (\(copied) copied, \(deleted) removed before stop)."
+                            message: "[SYNC - Multi Folder] Canceled cleanly by user after \(elapsed)s (\(copied) copied, \(deleted) removed before stop)."
                         )
                         return "canceled"
                     }
                     if plRes.exitCode != 0 {
-                        let msg = "[ERROR] [SNOWSKY SYNC] rsync exited with code \(plRes.exitCode) on Music/\(pl.folderName)/"
+                        let msg = "[ERROR] [SYNC - Multi Folder] rsync exited with code \(plRes.exitCode) on Music/\(pl.folderName)/"
                         emitSyncEvent(type: "ERROR", message: msg)
                         throw NSError(domain: "VolumeAndSyncService", code: Int(plRes.exitCode), userInfo: [NSLocalizedDescriptionKey: msg])
                     }
@@ -689,12 +689,12 @@ public final class VolumeAndSyncService: @unchecked Sendable {
                         if !validFoldersLower.contains(entry.lowercased()) {
                             try? fm.removeItem(atPath: fullPath)
                             deleted += 1
-                            emitSyncEvent(type: "PLAYLIST", message: "[SNOWSKY SYNC] Removed stale folder: Music/\(entry)/")
+                            emitSyncEvent(type: "PLAYLIST", message: "[SYNC - Multi Folder] Removed stale folder: Music/\(entry)/")
                         }
                     } else {
                         try? fm.removeItem(atPath: fullPath)
                         deleted += 1
-                        emitSyncEvent(type: "RSYNC", message: "[SNOWSKY SYNC] Removed flat/playlist file: Music/\(entry)")
+                        emitSyncEvent(type: "RSYNC", message: "[SYNC - Multi Folder] Removed flat/playlist file: Music/\(entry)")
                     }
                 }
             }
@@ -708,7 +708,7 @@ public final class VolumeAndSyncService: @unchecked Sendable {
         if getIsCancelRequested() {
             emitSyncEvent(
                 type: "DONE",
-                message: "[SNOWSKY SYNC] Canceled cleanly by user after \(elapsed)s (\(copied) copied, \(deleted) removed before stop)."
+                message: "[SYNC - Multi Folder] Canceled cleanly by user after \(elapsed)s (\(copied) copied, \(deleted) removed before stop)."
             )
             return "canceled"
         }
@@ -716,7 +716,7 @@ public final class VolumeAndSyncService: @unchecked Sendable {
         let unchanged = max(0, totalOps - copied)
         emitSyncEvent(
             type: "DONE",
-            message: "[SNOWSKY SYNC] Complete: \(copied) copied, \(unchanged) unchanged, \(deleted) removed across Library and \(plan.playlists.count) playlists in \(elapsed)s."
+            message: "[SYNC - Multi Folder] Complete: \(copied) copied, \(unchanged) unchanged, \(deleted) removed across Library and \(plan.playlists.count) playlists in \(elapsed)s."
         )
         return "done"
     }
@@ -827,26 +827,26 @@ public final class VolumeAndSyncService: @unchecked Sendable {
             targetMusicDir
         ]
 
-        emitSyncEvent(type: "RSYNC", message: "[SYNC] Starting SD Card sync -> \(targetMusicDir)")
-        emitSyncEvent(type: "RSYNC", message: "[SYNC] Scanning local library (\(trackCount) tracks, \(playlistCount) playlists)...")
+        emitSyncEvent(type: "RSYNC", message: "[SYNC - Single Folder] Starting SD Card sync -> \(targetMusicDir)")
+        emitSyncEvent(type: "RSYNC", message: "[SYNC - Single Folder] Scanning local library (\(trackCount) tracks, \(playlistCount) playlists)...")
 
         let counts: (copied: Int, deleted: Int)
         do {
-            let res = try await executeRsync(args: rsyncArgs, logPrefix: "[SYNC]")
+            let res = try await executeRsync(args: rsyncArgs, logPrefix: "[SYNC - Single Folder]")
             counts = (res.copied, res.deleted)
             let elapsed = String(format: "%.1f", Date().timeIntervalSince(startTime))
             if getIsCancelRequested() || res.exitCode == 15 || res.exitCode == 20 {
                 finalPhase = "canceled"
                 emitSyncEvent(
                     type: "DONE",
-                    message: "[SYNC] Canceled cleanly by user after \(elapsed)s (\(counts.copied) copied, \(counts.deleted) removed before stop)."
+                    message: "[SYNC - Single Folder] Canceled cleanly by user after \(elapsed)s (\(counts.copied) copied, \(counts.deleted) removed before stop)."
                 )
                 return
             }
 
             if res.exitCode != 0 {
                 finalPhase = "error"
-                let msg = "[ERROR] rsync exited with code \(res.exitCode)"
+                let msg = "[ERROR] [SYNC - Single Folder] rsync exited with code \(res.exitCode)"
                 emitSyncEvent(type: "ERROR", message: msg)
                 throw NSError(domain: "VolumeAndSyncService", code: Int(res.exitCode), userInfo: [NSLocalizedDescriptionKey: msg])
             }
@@ -867,7 +867,7 @@ public final class VolumeAndSyncService: @unchecked Sendable {
         let unchangedCount = max(0, totalLocal - counts.copied)
         emitSyncEvent(
             type: "DONE",
-            message: "[SYNC] Complete: \(counts.copied) copied, \(unchangedCount) unchanged, \(counts.deleted) removed in \(elapsed)s."
+            message: "[SYNC - Single Folder] Complete: \(counts.copied) copied, \(unchangedCount) unchanged, \(counts.deleted) removed in \(elapsed)s."
         )
     }
 
@@ -1382,7 +1382,7 @@ public final class VolumeAndSyncService: @unchecked Sendable {
         }
 
         let totalLocal = localAudioFiles.count + localPlaylistFiles.count
-        emitSyncEvent(type: "RSYNC", message: "[FTP SYNC] Scanning local library (\(localAudioFiles.count) tracks, \(localPlaylistFiles.count) playlists)...")
+        emitSyncEvent(type: "RSYNC", message: "[SYNC - Single Folder] Scanning local library (\(localAudioFiles.count) tracks, \(localPlaylistFiles.count) playlists)...")
         updateSyncState { st in
             st.phase = "syncing"
             st.totalCount = totalLocal
@@ -1414,7 +1414,7 @@ public final class VolumeAndSyncService: @unchecked Sendable {
             }
             emitSyncEvent(
                 type: "RSYNC",
-                message: "[FTP SYNC] Uploading (\(processed)/\(totalLocal)): \(item.name) (\(Self.formatByteCount(item.size)))"
+                message: "[SYNC - Single Folder] Uploading (\(processed)/\(totalLocal)): \(item.name) (\(Self.formatByteCount(item.size)))"
             )
             do {
                 try uploadFtpFile(
@@ -1459,7 +1459,7 @@ public final class VolumeAndSyncService: @unchecked Sendable {
                     st.currentFile = pl.name
                     st.processedCount = processed
                 }
-                emitSyncEvent(type: "PLAYLIST", message: "[FTP SYNC] Updating playlist: \(pl.name)")
+                emitSyncEvent(type: "PLAYLIST", message: "[SYNC - Single Folder] Updating playlist: \(pl.name)")
                 if remoteByName[pl.name] != nil {
                     try? deleteFtpFile(
                         host: target.host,
@@ -1506,7 +1506,7 @@ public final class VolumeAndSyncService: @unchecked Sendable {
                     updateSyncState { st in
                         st.currentFile = remote.name
                     }
-                    emitSyncEvent(type: "RSYNC", message: "[FTP SYNC] Deleting: \(remote.name)")
+                    emitSyncEvent(type: "RSYNC", message: "[SYNC - Single Folder] Deleting: \(remote.name)")
                     try? deleteFtpFile(
                         host: target.host,
                         port: target.port,
@@ -1526,14 +1526,14 @@ public final class VolumeAndSyncService: @unchecked Sendable {
             finalPhase = "canceled"
             emitSyncEvent(
                 type: "DONE",
-                message: "[FTP SYNC] Canceled cleanly by user after \(elapsed)s (\(uploaded) uploaded, \(skipped) unchanged, \(removed) removed before stop)."
+                message: "[SYNC - Single Folder] Canceled cleanly by user after \(elapsed)s (\(uploaded) uploaded, \(skipped) unchanged, \(removed) removed before stop)."
             )
             return
         }
 
         emitSyncEvent(
             type: "DONE",
-            message: "[DONE] [FTP SYNC] Complete: \(uploaded) uploaded, \(skipped) unchanged, \(playlistsUpdated) playlists updated, \(removed) removed in \(elapsed)s"
+            message: "[DONE] [SYNC - Single Folder] Complete: \(uploaded) uploaded, \(skipped) unchanged, \(playlistsUpdated) playlists updated, \(removed) removed in \(elapsed)s"
         )
     }
 
@@ -1568,7 +1568,7 @@ public final class VolumeAndSyncService: @unchecked Sendable {
         for entry in existingEntries where !entry.isDirectory {
             if getIsCancelRequested() { return }
             if !expectedFilenames.contains(entry.name) {
-                emitSyncEvent(type: "RSYNC", message: "[SNOWSKY SYNC] Deleting stale: \(entry.name)")
+                emitSyncEvent(type: "RSYNC", message: "[SYNC - Multi Folder] Deleting stale: \(entry.name)")
                 try? deleteFtpFile(
                     host: host,
                     port: port,
@@ -1600,7 +1600,7 @@ public final class VolumeAndSyncService: @unchecked Sendable {
             }
             emitSyncEvent(
                 type: "RSYNC",
-                message: "[SNOWSKY SYNC] Uploading (\(processed)/\(totalOps)): \(item.filename) (\(Self.formatByteCount(item.size)))"
+                message: "[SYNC - Multi Folder] Uploading (\(processed)/\(totalOps)): \(item.filename) (\(Self.formatByteCount(item.size)))"
             )
             do {
                 try uploadFtpFile(
@@ -1642,7 +1642,7 @@ public final class VolumeAndSyncService: @unchecked Sendable {
         let plan = buildSnowskyPlan(vaultDir: vaultDir)
         let totalOps = plan.totalOperations
 
-        emitSyncEvent(type: "RSYNC", message: "[SNOWSKY SYNC] Starting Wi-Fi FTP sync (Library/ + Playlist subfolders, no .m3u files)")
+        emitSyncEvent(type: "RSYNC", message: "[SYNC - Multi Folder] Starting Wi-Fi FTP sync (Library/ + Playlist subfolders, no .m3u files)")
         updateSyncState { st in
             st.phase = "syncing"
             st.totalCount = totalOps
@@ -1660,7 +1660,7 @@ public final class VolumeAndSyncService: @unchecked Sendable {
 
         // 1. Sync Library/
         let libraryRemoteDir = joinRemote("Library")
-        emitSyncEvent(type: "RSYNC", message: "[SNOWSKY SYNC] Syncing Library (\(plan.libraryTracks.count) tracks) -> \(libraryRemoteDir)/")
+        emitSyncEvent(type: "RSYNC", message: "[SYNC - Multi Folder] Syncing Library (\(plan.libraryTracks.count) tracks) -> \(libraryRemoteDir)/")
         try syncFtpSnowskySubfolder(
             host: host,
             port: port,
@@ -1683,7 +1683,7 @@ public final class VolumeAndSyncService: @unchecked Sendable {
             for pl in plan.playlists {
                 if getIsCancelRequested() { break }
                 let plRemoteDir = joinRemote(pl.folderName)
-                emitSyncEvent(type: "PLAYLIST", message: "[SNOWSKY SYNC] Syncing Playlist \"\(pl.rawName)\" (\(pl.tracks.count) tracks) -> \(plRemoteDir)/")
+                emitSyncEvent(type: "PLAYLIST", message: "[SYNC - Multi Folder] Syncing Playlist \"\(pl.rawName)\" (\(pl.tracks.count) tracks) -> \(plRemoteDir)/")
                 try syncFtpSnowskySubfolder(
                     host: host,
                     port: port,
@@ -1716,7 +1716,7 @@ public final class VolumeAndSyncService: @unchecked Sendable {
                     if getIsCancelRequested() { break }
                     let ext = "." + (entry.name as NSString).pathExtension.lowercased()
                     if ext == ".m3u" || ext == ".m3u8" {
-                        emitSyncEvent(type: "RSYNC", message: "[SNOWSKY SYNC] Deleting playlist file: \(entry.name)")
+                        emitSyncEvent(type: "RSYNC", message: "[SYNC - Multi Folder] Deleting playlist file: \(entry.name)")
                         try? deleteFtpFile(
                             host: host,
                             port: port,
@@ -1736,14 +1736,14 @@ public final class VolumeAndSyncService: @unchecked Sendable {
         if getIsCancelRequested() {
             emitSyncEvent(
                 type: "DONE",
-                message: "[SNOWSKY SYNC] Canceled cleanly by user after \(elapsed)s (\(uploaded) uploaded, \(skipped) unchanged, \(removed) removed before stop)."
+                message: "[SYNC - Multi Folder] Canceled cleanly by user after \(elapsed)s (\(uploaded) uploaded, \(skipped) unchanged, \(removed) removed before stop)."
             )
             return "canceled"
         }
 
         emitSyncEvent(
             type: "DONE",
-            message: "[DONE] [SNOWSKY SYNC] Complete: \(uploaded) uploaded, \(skipped) unchanged, \(removed) removed across Library and \(plan.playlists.count) playlists in \(elapsed)s"
+            message: "[DONE] [SYNC - Multi Folder] Complete: \(uploaded) uploaded, \(skipped) unchanged, \(removed) removed across Library and \(plan.playlists.count) playlists in \(elapsed)s"
         )
         return "done"
     }
